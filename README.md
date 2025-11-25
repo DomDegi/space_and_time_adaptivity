@@ -29,8 +29,11 @@ Follow these steps to compile and run the project:
 6.	**Compile the project**
   	```bash
     make
+7.  **Create a solutions directory inside build**
+    ```bash
+    mkdir solutions
    
-7.	**Run the program**
+9.	**Run the program**
     ```bash
     ./progetto
 
