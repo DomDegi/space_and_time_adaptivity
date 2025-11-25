@@ -1,3 +1,0 @@
-/shared-folder/PDE/prog/Progetto/build/CMakeFiles/progetto.dir
-/shared-folder/PDE/prog/Progetto/build/CMakeFiles/edit_cache.dir
-/shared-folder/PDE/prog/Progetto/build/CMakeFiles/rebuild_cache.dir
