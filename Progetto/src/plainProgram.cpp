@@ -290,7 +290,7 @@ namespace Progetto
 
   
  
- 
+  // Risolve il sistema lineare per un singolo passo temporale con CG
   template <int dim>
   void HeatEquation<dim>::solve_time_step()
   {
@@ -302,7 +302,7 @@ namespace Progetto
  
     cg.solve(system_matrix, solution, system_rhs, preconditioner);
  
-    constraints.distribute(solution);
+    constraints.distribute(solution); // Assicura che i contraints siano rispettati pulendo la soluzione
  
     std::cout << "     " << solver_control.last_step() << " CG iterations."
               << std::endl;
@@ -491,6 +491,31 @@ namespace Progetto
  
     const double end_time = 0.5; // Tempo finale
 
+    /*******************************************************************************************************+****
+     * 
+     * La matemaica dietro la risoluzione dell'equazione del calore con il metodo di Crank-Nicolson 
+     * 
+     * La PDE in forma semi-discreta (FEM nello spazio, tempo ancora continuo) è: M u_puntato(t) + K u(t) = F(t)
+     * dove M è la matrice di massa, K è la matrice di Laplace, F(t) è il vettore dei forcing(right-hand side)
+     * 
+     * Discretizzando temporalmente con Crank-Nicolson (θ=0.5) tra t^(n-1) e t^(n-1)+dt si ottiene:
+     *    (M + theta*dt*K) u^n =  (M - (1-theta)*dt*K) u^{n-1}+ dt*[ (1-theta)*F^{n-1} + theta*F^n ]
+     * 
+     * Tramite la sezione 1 del codice si calcola il primo termine di rhs:
+     *    (M - (1-theta)*dt*K) u^{n-1}
+     * 
+     * Tramite la sezione 2 del codice si calcolano i termini di forcing:
+     *    dt*[ (1-theta)*F^{n-1} + theta*F^n ]
+     * 
+     * Tramite la sezione 3 del codice si costruisce la matrice di sistema:
+     *    (M + theta*dt*K) u^n e viene posta uguale al rhs calcolato precedentemente
+     * 
+     * Tramite la sezione 4 del codice si applicano le condizioni al contorno
+     * 
+     * Nella sezione 5 del codice si risolve il sistema lineare per ottenere u^n e si scrive l'output
+     * 
+     ***********************************************************************************************************/
+
     if (!use_time_adaptivity)
       {
         // comportamento originale: passo fisso
@@ -502,10 +527,14 @@ namespace Progetto
             std::cout << "Time step " << timestep_number << " at t=" << time
                       << std::endl;
 
+            /***************************************        (1)        ***************************************/
+
             mass_matrix.vmult(system_rhs, old_solution);
 
             laplace_matrix.vmult(tmp, old_solution);
             system_rhs.add(-(1 - theta) * time_step, tmp);
+            
+            /***************************************        (2)        ***************************************/
 
             RightHandSide<dim> rhs_function;
             rhs_function.set_time(time);
@@ -526,10 +555,14 @@ namespace Progetto
 
             system_rhs += forcing_terms;
 
+            /***************************************        (3)        ***************************************/
+
             system_matrix.copy_from(mass_matrix);
             system_matrix.add(theta * time_step, laplace_matrix);
 
             constraints.condense(system_matrix, system_rhs);
+
+            /***************************************        (4)        ***************************************/
 
             {
               BoundaryValues<dim> boundary_values_function;
@@ -547,9 +580,13 @@ namespace Progetto
                                                  system_rhs);
             }
 
+            /***************************************        (5)        ***************************************/
+
             solve_time_step();
 
             output_results();
+
+            /*************************************************************************************************/
 
             if ((timestep_number == 1) &&
                 (pre_refinement_step < n_adaptive_pre_refinement_steps) && use_space_adaptivity)
