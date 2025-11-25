@@ -1,3 +1,7 @@
+# Space and Time Adaptivity
+
+This project implements an adaptive space–time finite element solver for the heat equation with localized impulsive forcing.
+
 # Build & Run Instructions
 
 Follow these steps to compile and run the project:
