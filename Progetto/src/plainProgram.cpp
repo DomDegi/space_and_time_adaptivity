@@ -121,6 +121,8 @@ namespace Progetto
     // parametri per la mesh
     bool use_mesh; // true -> genera mesh, false -> importa da file
     int cells_per_direction; // numero di celle per direzione (se genera mesh)
+
+    PreconditionSSOR<SparseMatrix<double>> preconditioner;
   };
  
  
@@ -175,13 +177,19 @@ namespace Progetto
       return 0;
     */
     
+    // a è un parametro che controlla l'ampiezza delle oscillazioni temporali
+    const double a     = 5.0;             // <-- scegli tu il valore di a
 
-    const double a     = 5.0;
-    const unsigned int N = 5;
-    const double sigma = 1.0;           // <-- scegli tu il valore di σ
+    // N è il numero di oscillazioni in un'unità di tempo
+    const unsigned int N = 5;            // <-- scegli tu il valore di N
+
+    // Sigma rappresenta la dimesione del centro della sorgente di calore
+    const double sigma = 0.5;           // <-- scegli tu il valore di σ
+    // Per essere rilevante deve essere almeno grande quanto la grandezza delle celle
+    
     Point<dim> x0;
-    x0[0] = 0;
-    x0[1] = 0;
+    x0[0] = 0.5;
+    x0[1] = 0.5;
     
     // g(t) = exp(-a cos(2 N pi t)) / exp(a)
     const double g = std::exp(-a * std::cos(2.0 * N * numbers::PI * time))
@@ -237,7 +245,7 @@ namespace Progetto
     , use_space_adaptivity(space_adaptivity) //Se scegliamo true utilizziamo l'adattività spaziale
     , use_time_adaptivity(time_adaptivity) //Se scegliamo true utilizziamo la time adaptivity
     , use_step_doubling(step_doubling) //Se scegliamo false utilizziamo la heuristica economica
-    , time_step_tolerance(1e-4)
+    , time_step_tolerance(1e-8) //tolleranza per il controllo dell'errore nella time adaptivity
     , time_step_min(1e-6)
     , time_step_max(1e-1)
     , time_step_safety(0.9)
@@ -279,9 +287,21 @@ namespace Progetto
       MatrixCreator::create_mass_matrix(dof_handler,
                                         QGauss<dim>(fe.degree + 1),
                                         mass_matrix);
+      
+      //La matrice di massa rappresenta la capacità termica del materiale(calore specifico) per la densità, senza c si da il valore unitario
+      //Se si volesse considerare un materiale con capacità termica c diversa da 1 e densità d diversa da 1
+      double d = 1.0; // <-- scegli tu il valore di d
+      double c = 1.0; // <-- scegli tu il valore di c
+      mass_matrix *= c * d;
+
       MatrixCreator::create_laplace_matrix(dof_handler,
                                           QGauss<dim>(fe.degree + 1),
                                           laplace_matrix);
+
+      //La matrice di laplace rappresenta la conduttività termica del materiale, senza k si da il valore unitario
+      //Se si volesse considerare un materiale con conduttività termica k diversa da 1
+      double k = 1.0; // <-- scegli tu il valore di k
+      laplace_matrix *= k;
   
       solution.reinit(dof_handler.n_dofs());
       old_solution.reinit(dof_handler.n_dofs());
@@ -296,12 +316,10 @@ namespace Progetto
   {
     SolverControl            solver_control(1000, 1e-8 * system_rhs.l2_norm());
     SolverCG<Vector<double>> cg(solver_control);
- 
-    PreconditionSSOR<SparseMatrix<double>> preconditioner;
+
     preconditioner.initialize(system_matrix, 1.0);
- 
     cg.solve(system_matrix, solution, system_rhs, preconditioner);
- 
+    
     constraints.distribute(solution); // Assicura che i contraints siano rispettati pulendo la soluzione
  
     std::cout << "     " << solver_control.last_step() << " CG iterations."
@@ -400,8 +418,10 @@ namespace Progetto
   void HeatEquation<dim>::refine_mesh(const unsigned int min_grid_level,
                                       const unsigned int max_grid_level)
   {
+    //Crea un vettore per l'errore stimato su ogni cella
     Vector<float> estimated_error_per_cell(triangulation.n_active_cells());
  
+    //Stima l'errore usando il KellyErrorEstimator, va a popolare il vettore passato come argomento estimated_error_per_cell
     KellyErrorEstimator<dim>::estimate(
       dof_handler,
       QGauss<dim - 1>(fe.degree + 1),
@@ -409,11 +429,13 @@ namespace Progetto
       solution,
       estimated_error_per_cell);
  
+    //Refina e coarsena una frazione fissa di celle in base all'errore stimato, il 60% con errore più alto viene raffinato, il 40% con errore più basso viene coarsenato
     GridRefinement::refine_and_coarsen_fixed_fraction(triangulation,
                                                       estimated_error_per_cell,
                                                       0.6,
                                                       0.4);
  
+    // Assicura che il livello di raffinamento sia compreso tra min_grid_level e max_grid_level
     if (triangulation.n_levels() > max_grid_level)
       for (const auto &cell :
            triangulation.active_cell_iterators_on_level(max_grid_level))
@@ -422,20 +444,34 @@ namespace Progetto
          triangulation.active_cell_iterators_on_level(min_grid_level))
       cell->clear_coarsen_flag();
  
+    //Solution transfer serve per trasferire la soluzione dalla vecchia mesh a quella nuova
     SolutionTransfer<dim> solution_trans(dof_handler);
- 
+    
+    //Copia la soluzione precedente prima di modificare la mesh
     Vector<double> previous_solution;
     previous_solution = solution;
+
+    //Prepara la triangolazione per il raffinamento e la coarsening
     triangulation.prepare_coarsening_and_refinement();
+
+    //Prepara il solution transfer per il raffinamento e la coarsening, passando la soluzione precedente
     solution_trans.prepare_for_coarsening_and_refinement(previous_solution);
  
+    //Esegue effettivamente il raffinamento e la coarsening
     triangulation.execute_coarsening_and_refinement();
+
+    //Ridistribuisce i DoF sulla nuova mesh
     setup_system();
  
+    //Interpola la soluzione precedente sulla nuova mesh
     solution_trans.interpolate(previous_solution, solution);
+
+    //Assicura che i constraints siano rispettati
     constraints.distribute(solution);
 
-
+    //Aggiorna la old_solution per il prossimo passo temporale in modo che se applico time adaptivity dopo lo step di mesh non torni a 0
+    old_solution.reinit(solution.size());
+    old_solution = solution;
   }
  
  
@@ -466,8 +502,6 @@ namespace Progetto
       setup_system();
     }               
     
-     
- 
     unsigned int pre_refinement_step = 0;
  
     Vector<double> tmp;
@@ -626,18 +660,24 @@ namespace Progetto
                 // step-doubling: soluzione con dt e con due mezzi-passi dt/2
                 Vector<double> u_one(solution.size());
                 Vector<double> u_two(solution.size());
-
                 const double t_one = time + dt;
-
-                do_time_step(old_solution, dt, t_one, u_one);
-
-                const double dt2 = dt * 0.5;
-                Vector<double> u_half(solution.size());
-                //Per calcolare l'errore faccio due mezzi-passi, ovvero:
-                do_time_step(old_solution, dt2, time + dt2, u_half);
-                do_time_step(u_half, dt2, t_one, u_two);
-                //Infatti devo confrontare u_one con u_two, ma devono essere due soluzioni allo stesso
-                //istante di tempo t_one = time + dt
+                //#pragma omp sections
+                {
+                  //#pragma omp section
+                  {
+                    do_time_step(old_solution, dt, t_one, u_one);
+                  }
+                  //#pragma omp section
+                  {
+                    const double dt2 = dt * 0.5;
+                    Vector<double> u_half(solution.size());
+                    //Per calcolare l'errore faccio due mezzi-passi, ovvero:
+                    do_time_step(old_solution, dt2, time + dt2, u_half);
+                    do_time_step(u_half, dt2, t_one, u_two);
+                    //Infatti devo confrontare u_one con u_two, ma devono essere due soluzioni allo stesso
+                    //istante di tempo t_one = time + dt
+                  }
+                }
 
                 Vector<double> diff(u_two); //calcolo differenza tra le soluzioni a dt e dt/2
                 diff -= u_one;
@@ -715,13 +755,15 @@ namespace Progetto
                                                     rhs_function,
                                                     rhs_old);
 
+                // differenza tra i due RHS
                 Vector<double> rhs_diff = rhs_new;
                 rhs_diff -= rhs_old;
                 const double rhs_diff_norm = rhs_diff.l2_norm();
 
-                // stima d'errore proporzionale a dt * ||rhs_diff||
-                const double error_est = dt * rhs_diff_norm;
-                const double tol_scaled = time_step_tolerance * std::max(1.0, old_solution.l2_norm()) + 1e-16;
+                // errore relativo ~ dt * ||f(t+dt)-f(t)|| / ||f(t+dt)||
+                const double rhs_norm   = std::max(1.0, rhs_new.l2_norm());
+                const double error_est  = dt * rhs_diff_norm / rhs_norm;
+                const double tol        = time_step_tolerance;
 
                 // costruiamo e risolviamo il sistema con dt (come prima)
                 mass_matrix.vmult(system_rhs, old_solution);
@@ -736,6 +778,7 @@ namespace Progetto
                                                     tmp);
                 forcing_terms = tmp;
                 forcing_terms *= dt * theta;
+
                 rhs_function.set_time(time);
                 VectorTools::create_right_hand_side(dof_handler,
                                                     QGauss<dim>(fe.degree + 1),
@@ -791,14 +834,20 @@ namespace Progetto
                         forcing_terms.reinit(solution.size());
                       }
 
-                const double err_ratio = (error_est > 0.0) ? (tol_scaled / error_est) : 1e6;
-                double dt_new = dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
+                // adattamento "semplice" di dt
+                double factor = 1.0;
+                if (error_est > 2.0 * tol)
+                  factor = 0.5;      // errore grande → dimezza dt
+                else if (error_est < 0.25 * tol)
+                  factor = 2.0;      // errore molto piccolo → raddoppia dt
+
+                double dt_new = dt * factor * time_step_safety;
                 dt_new = std::min(std::max(dt_new, time_step_min), time_step_max);
                 time_step = dt_new;
               }
           }
       }
-  }
+    }
 } // namespace Progetto
  
  
