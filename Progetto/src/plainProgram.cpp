@@ -1,6 +1,8 @@
 #include <deal.II/base/utilities.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/function.h>
+#include <deal.II/base/numbers.h>
+
 #include <deal.II/lac/vector.h>
 #include <deal.II/lac/full_matrix.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
@@ -8,34 +10,39 @@
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/affine_constraints.h>
+
 #include <deal.II/grid/tria.h>
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/grid_refinement.h>
 #include <deal.II/grid/grid_out.h>
+#include <deal.II/grid/grid_in.h>
+
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
+
 #include <deal.II/fe/fe_q.h>
 #include <deal.II/fe/fe_values.h>
+
 #include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/numerics/error_estimator.h>
 #include <deal.II/numerics/solution_transfer.h>
 #include <deal.II/numerics/matrix_creator.h>
 #include <deal.II/numerics/matrix_tools.h>
-#include <deal.II/grid/grid_in.h>
 
 #include <fstream>
 #include <iostream>
 #include <cmath>
 #include <algorithm>
 #include <filesystem>
+#include <map>
+#include <string>
 
 void clear_solutions_folder()
 {
+    std::filesystem::create_directories("solutions");
     for (const auto &entry : std::filesystem::directory_iterator("solutions"))
-    {
         std::filesystem::remove_all(entry.path());
-    }
 }
 
 bool ask_bool(const std::string &question)
@@ -46,7 +53,6 @@ bool ask_bool(const std::string &question)
         std::string input;
         std::cin >> input;
 
-        // converto in lowercase
         std::transform(input.begin(), input.end(), input.begin(), ::tolower);
 
         if (input == "s" || input == "si" || input == "y" || input == "yes" || input == "1")
@@ -67,17 +73,25 @@ namespace Progetto
   class HeatEquation
   {
   public:
-    HeatEquation(bool space_adaptivity, bool time_adaptivity, bool step_doubling, bool mesh, int cells_per_direction);
+    HeatEquation(bool space_adaptivity,
+                 bool time_adaptivity,
+                 bool step_doubling,
+                 bool mesh,
+                 int  cells_per_direction);
+
     void run();
 
   private:
     void setup_system();
     void solve_time_step();
+
     void do_time_step(const Vector<double> &u_old,
                       const double          dt,
                       const double          t_new,
                       Vector<double> &      u_out);
+
     void output_results() const;
+
     void refine_mesh(const unsigned int min_grid_level,
                      const unsigned int max_grid_level);
 
@@ -100,14 +114,11 @@ namespace Progetto
     double       time_step;
     unsigned int timestep_number;
 
-    //flag per attività spaziale
-    bool use_space_adaptivity; // abilita/disabilita adattività spaziale
+    bool use_space_adaptivity;
 
-    // flags per adattività temporale
-    bool use_time_adaptivity; // abilita/disabilita adattività temporale
-    bool use_step_doubling;   // true -> step-doubling, false -> heuristica economica
+    bool use_time_adaptivity;
+    bool use_step_doubling;
 
-    // parametri per adattività temporale
     double time_step_tolerance;
     double time_step_min;
     double time_step_max;
@@ -115,9 +126,8 @@ namespace Progetto
 
     const double theta;
 
-    // parametri per la mesh
-    bool use_mesh; // true -> genera mesh, false -> importa da file
-    int cells_per_direction; // numero di celle per direzione (se genera mesh)
+    bool use_mesh;
+    int  cells_per_direction;
 
     PreconditionSSOR<SparseMatrix<double>> preconditioner;
   };
@@ -148,39 +158,30 @@ namespace Progetto
 
     const double time = this->get_time();
 
-    // a è un parametro che controlla l'ampiezza delle oscillazioni temporali
     const double a     = 5.0;
-
-    // N è il numero di oscillazioni in un'unità di tempo
     const unsigned int N = 5;
 
-    // Sigma rappresenta la dimesione del centro della sorgente di calore
+    // sigma della sorgente (come nel tuo file originale)
     const double sigma = 0.5;
 
     Point<dim> x0;
     x0[0] = 0.5;
     x0[1] = 0.5;
 
-    // g(t) = exp(-a cos(2 N pi t)) / exp(a)
-    const double g = std::exp(-a * std::cos(2.0 * N * numbers::PI * time))
-                    / std::exp(a);
+    const double g =
+      std::exp(-a * std::cos(2.0 * N * numbers::PI * time)) / std::exp(a);
 
-    // |x - x0|^2
     double r2 = 0.0;
     for (unsigned int d = 0; d < dim; ++d)
-      {
-        const double diff = p[d] - x0[d];
-        r2 += diff * diff;
-      }
+    {
+      const double diff = p[d] - x0[d];
+      r2 += diff * diff;
+    }
 
-    // h(x) = exp( - |x - x0|^2 / sigma^2 )
     const double h = std::exp(-r2 / (sigma * sigma));
-
-    // f(x,t) = g(t) * h(x)
     return g * h;
   }
 
-  // (Lasciata nel file, ma NON più usata: ora usiamo Neumann omogenea, quindi non imponiamo Dirichlet)
   template <int dim>
   class BoundaryValues : public Function<dim>
   {
@@ -201,10 +202,12 @@ namespace Progetto
   template <int dim>
   HeatEquation<dim>::HeatEquation(bool space_adaptivity,
                                  bool time_adaptivity,
-                                 bool step_doubling, bool mesh, int cells_per_direction)
+                                 bool step_doubling,
+                                 bool mesh,
+                                 int  cells_per_direction)
     : fe(1)
     , dof_handler(triangulation)
-    , time_step(1. / 500)
+    , time_step(1. / 500.0)
     , timestep_number(0)
     , use_space_adaptivity(space_adaptivity)
     , use_time_adaptivity(time_adaptivity)
@@ -221,49 +224,45 @@ namespace Progetto
   template <int dim>
   void HeatEquation<dim>::setup_system()
   {
-      dof_handler.distribute_dofs(fe);
+    dof_handler.distribute_dofs(fe);
 
-      std::cout << std::endl
-                << "===========================================" << std::endl
-                << "Number of active cells: " << triangulation.n_active_cells()
-                << std::endl
-                << "Number of degrees of freedom: " << dof_handler.n_dofs()
-                << std::endl
-                << std::endl;
+    std::cout << std::endl
+              << "===========================================" << std::endl
+              << "Number of active cells: " << triangulation.n_active_cells() << std::endl
+              << "Number of degrees of freedom: " << dof_handler.n_dofs() << std::endl
+              << std::endl;
 
-      constraints.clear();
-      DoFTools::make_hanging_node_constraints(dof_handler, constraints);
-      constraints.close();
+    constraints.clear();
+    DoFTools::make_hanging_node_constraints(dof_handler, constraints);
+    constraints.close();
 
-      DynamicSparsityPattern dsp(dof_handler.n_dofs());
-      DoFTools::make_sparsity_pattern(dof_handler,
-                                      dsp,
-                                      constraints,
-                                      /*keep_constrained_dofs = */ true);
-      sparsity_pattern.copy_from(dsp);
+    DynamicSparsityPattern dsp(dof_handler.n_dofs());
+    DoFTools::make_sparsity_pattern(dof_handler, dsp, constraints,
+                                    /*keep_constrained_dofs=*/true);
+    sparsity_pattern.copy_from(dsp);
 
-      mass_matrix.reinit(sparsity_pattern);
-      laplace_matrix.reinit(sparsity_pattern);
-      system_matrix.reinit(sparsity_pattern);
+    mass_matrix.reinit(sparsity_pattern);
+    laplace_matrix.reinit(sparsity_pattern);
+    system_matrix.reinit(sparsity_pattern);
 
-      MatrixCreator::create_mass_matrix(dof_handler,
-                                        QGauss<dim>(fe.degree + 1),
-                                        mass_matrix);
+    MatrixCreator::create_mass_matrix(dof_handler,
+                                      QGauss<dim>(fe.degree + 1),
+                                      mass_matrix);
 
-      double d = 1.0;
-      double c = 1.0;
-      mass_matrix *= c * d;
+    const double d = 1.0;
+    const double c = 1.0;
+    mass_matrix *= c * d;
 
-      MatrixCreator::create_laplace_matrix(dof_handler,
-                                          QGauss<dim>(fe.degree + 1),
-                                          laplace_matrix);
+    MatrixCreator::create_laplace_matrix(dof_handler,
+                                         QGauss<dim>(fe.degree + 1),
+                                         laplace_matrix);
 
-      double k = 1.0;
-      laplace_matrix *= k;
+    const double k = 1.0;
+    laplace_matrix *= k;
 
-      solution.reinit(dof_handler.n_dofs());
-      old_solution.reinit(dof_handler.n_dofs());
-      system_rhs.reinit(dof_handler.n_dofs());
+    solution.reinit(dof_handler.n_dofs());
+    old_solution.reinit(dof_handler.n_dofs());
+    system_rhs.reinit(dof_handler.n_dofs());
   }
 
   template <int dim>
@@ -277,8 +276,7 @@ namespace Progetto
 
     constraints.distribute(solution);
 
-    std::cout << "     " << solver_control.last_step() << " CG iterations."
-              << std::endl;
+    std::cout << "     " << solver_control.last_step() << " CG iterations." << std::endl;
   }
 
   template <int dim>
@@ -290,15 +288,13 @@ namespace Progetto
     Vector<double> tmp(u_old.size());
     Vector<double> forcing_terms_local(u_old.size());
 
-    // system_rhs = M * u_old
     mass_matrix.vmult(system_rhs, u_old);
 
-    // tmp = K * u_old
     laplace_matrix.vmult(tmp, u_old);
-    system_rhs.add(-(1 - theta) * dt, tmp);
+    system_rhs.add(-(1.0 - theta) * dt, tmp);
 
-    // contributi sorgente: f(t_new) e f(t_new - dt)
     RightHandSide<dim> rhs_function;
+
     rhs_function.set_time(t_new);
     VectorTools::create_right_hand_side(dof_handler,
                                         QGauss<dim>(fe.degree + 1),
@@ -312,18 +308,14 @@ namespace Progetto
                                         QGauss<dim>(fe.degree + 1),
                                         rhs_function,
                                         tmp);
-
-    forcing_terms_local.add(dt * (1 - theta), tmp);
+    forcing_terms_local.add(dt * (1.0 - theta), tmp);
 
     system_rhs += forcing_terms_local;
 
-    // system_matrix = M + theta*dt*K
     system_matrix.copy_from(mass_matrix);
     system_matrix.add(theta * dt, laplace_matrix);
 
     constraints.condense(system_matrix, system_rhs);
-
-    // >>> BC CORRETTA: Neumann omogenea (naturale) => NON si impone nulla qui <<<
 
     solve_time_step();
 
@@ -333,17 +325,18 @@ namespace Progetto
   template <int dim>
   void HeatEquation<dim>::output_results() const
   {
-    DataOut<dim> data_out;
+    std::filesystem::create_directories("solutions");
 
+    DataOut<dim> data_out;
     data_out.attach_dof_handler(dof_handler);
     data_out.add_data_vector(solution, "U");
-
     data_out.build_patches();
 
     data_out.set_flags(DataOutBase::VtkFlags(time, timestep_number));
 
     const std::string filename =
-      "solution-" + Utilities::int_to_string(timestep_number, 3) + ".vtk";
+      "solution-" + Utilities::int_to_string(timestep_number, 6) + ".vtk";
+
     std::ofstream output("solutions/" + filename);
     data_out.write_vtk(output);
   }
@@ -367,11 +360,10 @@ namespace Progetto
                                                       0.4);
 
     if (triangulation.n_levels() > max_grid_level)
-      for (const auto &cell :
-           triangulation.active_cell_iterators_on_level(max_grid_level))
+      for (const auto &cell : triangulation.active_cell_iterators_on_level(max_grid_level))
         cell->clear_refine_flag();
-    for (const auto &cell :
-         triangulation.active_cell_iterators_on_level(min_grid_level))
+
+    for (const auto &cell : triangulation.active_cell_iterators_on_level(min_grid_level))
       cell->clear_coarsen_flag();
 
     SolutionTransfer<dim> solution_trans(dof_handler);
@@ -389,6 +381,7 @@ namespace Progetto
     solution_trans.interpolate(previous_solution, solution);
     constraints.distribute(solution);
 
+    // coerente per refinements DURANTE l'evoluzione
     old_solution.reinit(solution.size());
     old_solution = solution;
   }
@@ -399,11 +392,12 @@ namespace Progetto
     const unsigned int initial_global_refinement       = 2;
     const unsigned int n_adaptive_pre_refinement_steps = 4;
 
+    // Mesh + setup
     if (use_mesh)
     {
-        GridGenerator::subdivided_hyper_cube(triangulation, cells_per_direction);
-        triangulation.refine_global(initial_global_refinement);
-        setup_system();
+      GridGenerator::subdivided_hyper_cube(triangulation, cells_per_direction);
+      triangulation.refine_global(initial_global_refinement);
+      setup_system();
     }
     else
     {
@@ -420,343 +414,326 @@ namespace Progetto
       setup_system();
     }
 
-    unsigned int pre_refinement_step = 0;
+    // Imposto IC: u(t=0)=0
+    VectorTools::interpolate(dof_handler, Functions::ZeroFunction<dim>(), old_solution);
+    solution = old_solution;
 
-    Vector<double> tmp;
-    Vector<double> forcing_terms;
+    // ====== PRE-REFINEMENT COERENTE (senza goto) ======
+    // Idea: faccio un "probe step" da t=0 a t=time_step, raffino sulla soluzione ottenuta,
+    // poi resetto IC a zero e ripeto per n_adaptive_pre_refinement_steps volte.
+    if (use_space_adaptivity)
+    {
+      for (unsigned int pre = 0; pre < n_adaptive_pre_refinement_steps; ++pre)
+      {
+        std::cout << "\n[Pre-refinement] step " << (pre + 1) << " / "
+                  << n_adaptive_pre_refinement_steps << std::endl;
 
-  start_time_iteration:
+        const double dt_probe = time_step;
+        Vector<double> u_probe(solution.size());
 
+        // probe: da t=0 a t=dt_probe partendo da IC
+        do_time_step(old_solution, dt_probe, dt_probe, u_probe);
+
+        // ora 'solution' (e u_probe) contiene la soluzione a t=dt_probe -> uso per stimare errore
+        refine_mesh(initial_global_refinement,
+                    initial_global_refinement + n_adaptive_pre_refinement_steps);
+
+        // IMPORTANTISSIMO: dopo il raffinamento, riparto coerentemente dalla IC (zero)
+        VectorTools::interpolate(dof_handler, Functions::ZeroFunction<dim>(), old_solution);
+        solution = old_solution;
+      }
+    }
+
+    // ====== INIZIO SIMULAZIONE VERA ======
     time            = 0.0;
     timestep_number = 0;
 
-    tmp.reinit(solution.size());
-    forcing_terms.reinit(solution.size());
-
-    VectorTools::interpolate(dof_handler,
-                             Functions::ZeroFunction<dim>(),
-                             old_solution);
-    solution = old_solution;
-
+    // output iniziale sulla mesh finale (dopo pre-refinement)
     output_results();
+
+    Vector<double> tmp(solution.size());
+    Vector<double> forcing_terms(solution.size());
 
     const double end_time = 0.5;
 
     if (!use_time_adaptivity)
+    {
+      const double eps = 1e-12;
+
+      while (time < end_time - eps)
       {
-        // comportamento originale: passo fisso
-        while (time <= end_time)
+        const double dt = std::min(time_step, end_time - time);
+        time += dt;
+        ++timestep_number;
+
+        std::cout << "Time step " << timestep_number
+                  << " at t=" << time
+                  << "  dt=" << dt << std::endl;
+
+        mass_matrix.vmult(system_rhs, old_solution);
+
+        laplace_matrix.vmult(tmp, old_solution);
+        system_rhs.add(-(1.0 - theta) * dt, tmp);
+
+        RightHandSide<dim> rhs_function;
+
+        rhs_function.set_time(time);
+        VectorTools::create_right_hand_side(dof_handler,
+                                            QGauss<dim>(fe.degree + 1),
+                                            rhs_function,
+                                            tmp);
+        forcing_terms = tmp;
+        forcing_terms *= dt * theta;
+
+        rhs_function.set_time(time - dt);
+        VectorTools::create_right_hand_side(dof_handler,
+                                            QGauss<dim>(fe.degree + 1),
+                                            rhs_function,
+                                            tmp);
+        forcing_terms.add(dt * (1.0 - theta), tmp);
+
+        system_rhs += forcing_terms;
+
+        system_matrix.copy_from(mass_matrix);
+        system_matrix.add(theta * dt, laplace_matrix);
+
+        constraints.condense(system_matrix, system_rhs);
+
+        solve_time_step();
+
+        output_results();
+
+        // Refinement DURANTE evoluzione: qui old_solution deve restare coerente col tempo corrente.
+        if ((timestep_number > 0) && (timestep_number % 5 == 0) && use_space_adaptivity)
+        {
+          refine_mesh(initial_global_refinement,
+                      initial_global_refinement + n_adaptive_pre_refinement_steps);
+
+          tmp.reinit(solution.size());
+          forcing_terms.reinit(solution.size());
+        }
+
+        old_solution = solution;
+      }
+    }
+    else
+    {
+      const unsigned int p = 2;
+
+      while (time < end_time)
+      {
+        double dt = std::min(time_step, end_time - time);
+
+        if (use_step_doubling)
+        {
+          Vector<double> u_one(solution.size());
+          Vector<double> u_two(solution.size());
+          const double t_one = time + dt;
+
+          do_time_step(old_solution, dt, t_one, u_one);
+
+          const double dt2 = 0.5 * dt;
+          Vector<double> u_half(solution.size());
+          do_time_step(old_solution, dt2, time + dt2, u_half);
+          do_time_step(u_half, dt2, t_one, u_two);
+
+          Vector<double> diff(u_two);
+          diff -= u_one;
+          const double error = diff.l2_norm();
+
+          const double sol_norm   = std::max(1.0, u_two.l2_norm());
+          const double tol_scaled = time_step_tolerance * sol_norm + 1e-16;
+
+          if (error <= tol_scaled)
           {
-            time += time_step;
+            time = t_one;
             ++timestep_number;
+            solution = u_two;
+            old_solution = solution;
 
-            std::cout << "Time step " << timestep_number << " at t=" << time
-                      << std::endl;
-
-            mass_matrix.vmult(system_rhs, old_solution);
-
-            laplace_matrix.vmult(tmp, old_solution);
-            system_rhs.add(-(1 - theta) * time_step, tmp);
-
-            RightHandSide<dim> rhs_function;
-            rhs_function.set_time(time);
-            VectorTools::create_right_hand_side(dof_handler,
-                                                QGauss<dim>(fe.degree + 1),
-                                                rhs_function,
-                                                tmp);
-            forcing_terms = tmp;
-            forcing_terms *= time_step * theta;
-
-            rhs_function.set_time(time - time_step);
-            VectorTools::create_right_hand_side(dof_handler,
-                                                QGauss<dim>(fe.degree + 1),
-                                                rhs_function,
-                                                tmp);
-
-            forcing_terms.add(time_step * (1 - theta), tmp);
-
-            system_rhs += forcing_terms;
-
-            system_matrix.copy_from(mass_matrix);
-            system_matrix.add(theta * time_step, laplace_matrix);
-
-            constraints.condense(system_matrix, system_rhs);
-
-            // >>> BC CORRETTA: Neumann omogenea (naturale) => NON si impone nulla qui <<<
-
-            solve_time_step();
+            std::cout << "Time step " << timestep_number
+                      << " accepted at t=" << time
+                      << "  dt=" << dt
+                      << "  error=" << error << std::endl;
 
             output_results();
 
-            if ((timestep_number == 1) &&
-                (pre_refinement_step < n_adaptive_pre_refinement_steps) && use_space_adaptivity)
-              {
-                refine_mesh(initial_global_refinement,
-                            initial_global_refinement +
-                              n_adaptive_pre_refinement_steps);
-                ++pre_refinement_step;
+            if ((timestep_number > 0) && (timestep_number % 5 == 0) && use_space_adaptivity)
+            {
+              refine_mesh(initial_global_refinement,
+                          initial_global_refinement + n_adaptive_pre_refinement_steps);
 
-                std::cout << std::endl;
+              tmp.reinit(solution.size());
+              forcing_terms.reinit(solution.size());
+            }
 
-                goto start_time_iteration;
-              }
-            else if ((timestep_number > 0) && (timestep_number % 5 == 0) && use_space_adaptivity)
-              {
-                refine_mesh(initial_global_refinement,
-                            initial_global_refinement +
-                              n_adaptive_pre_refinement_steps);
-                tmp.reinit(solution.size());
-                forcing_terms.reinit(solution.size());
-              }
+            const double err_ratio =
+              (error > 0.0) ? (time_step_tolerance * sol_norm / error) : 1e6;
 
-            old_solution = solution;
+            double dt_new = dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
+            dt_new = std::min(std::max(dt_new, time_step_min), time_step_max);
+            time_step = dt_new;
           }
-      }
-    else
-      {
-        const unsigned int p = 2;
-
-        while (time < end_time)
+          else
           {
-            double dt = std::min(time_step, end_time - time);
+            const double err_ratio =
+              (error > 0.0) ? (time_step_tolerance * std::max(1.0, u_two.l2_norm()) / error) : 1e6;
 
-            if (use_step_doubling)
-              {
-                Vector<double> u_one(solution.size());
-                Vector<double> u_two(solution.size());
-                const double t_one = time + dt;
+            double dt_new = dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
+            dt_new = std::max(dt_new, time_step_min);
+            time_step = dt_new;
 
-                {
-                  {
-                    do_time_step(old_solution, dt, t_one, u_one);
-                  }
-                  {
-                    const double dt2 = dt * 0.5;
-                    Vector<double> u_half(solution.size());
-                    do_time_step(old_solution, dt2, time + dt2, u_half);
-                    do_time_step(u_half, dt2, t_one, u_two);
-                  }
-                }
-
-                Vector<double> diff(u_two);
-                diff -= u_one;
-                const double error = diff.l2_norm();
-
-                const double sol_norm = std::max(1.0, u_two.l2_norm());
-                const double tol_scaled = time_step_tolerance * sol_norm + 1e-16;
-
-                if (error <= tol_scaled)
-                  {
-                    time = t_one;
-                    ++timestep_number;
-                    solution = u_two;
-                    old_solution = solution;
-                    std::cout << "Time step " << timestep_number << " accepted at t=" << time
-                              << "  dt=" << dt << "  error=" << error << std::endl;
-
-                    output_results();
-
-                    if ((timestep_number == 1) &&
-                        (pre_refinement_step < n_adaptive_pre_refinement_steps) && use_space_adaptivity)
-                      {
-                        refine_mesh(initial_global_refinement,
-                                    initial_global_refinement +
-                                      n_adaptive_pre_refinement_steps);
-                        ++pre_refinement_step;
-
-                        std::cout << std::endl;
-
-                        goto start_time_iteration;
-                      }
-                    else if ((timestep_number > 0) && (timestep_number % 5 == 0) && use_space_adaptivity)
-                      {
-                        refine_mesh(initial_global_refinement,
-                                    initial_global_refinement +
-                                      n_adaptive_pre_refinement_steps);
-                        tmp.reinit(solution.size());
-                        forcing_terms.reinit(solution.size());
-                      }
-
-                    const double err_ratio = (error > 0.0) ? (time_step_tolerance * sol_norm / error) : 1e6;
-                    double dt_new = dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
-                    dt_new = std::min(std::max(dt_new, time_step_min), time_step_max);
-                    time_step = dt_new;
-                  }
-                else
-                  {
-                    const double err_ratio = (error > 0.0) ? (time_step_tolerance * std::max(1.0, u_two.l2_norm()) / error) : 1e6;
-                    double dt_new = dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
-                    dt_new = std::max(dt_new, time_step_min);
-                    time_step = dt_new;
-                    std::cout << "Time step rejected at t=" << time << "  dt_old=" << dt
-                              << "  error=" << error << "  new_dt=" << time_step << std::endl;
-                  }
-              }
-            else
-              {
-                const double t_new = time + dt;
-
-                Vector<double> rhs_new(solution.size());
-                RightHandSide<dim> rhs_function;
-                rhs_function.set_time(t_new);
-                VectorTools::create_right_hand_side(dof_handler,
-                                                    QGauss<dim>(fe.degree + 1),
-                                                    rhs_function,
-                                                    rhs_new);
-
-                Vector<double> rhs_old(solution.size());
-                rhs_function.set_time(time);
-                VectorTools::create_right_hand_side(dof_handler,
-                                                    QGauss<dim>(fe.degree + 1),
-                                                    rhs_function,
-                                                    rhs_old);
-
-                Vector<double> rhs_diff = rhs_new;
-                rhs_diff -= rhs_old;
-                const double rhs_diff_norm = rhs_diff.l2_norm();
-
-                const double rhs_norm   = std::max(1.0, rhs_new.l2_norm());
-                const double error_est  = dt * rhs_diff_norm / rhs_norm;
-                const double tol        = time_step_tolerance;
-
-                mass_matrix.vmult(system_rhs, old_solution);
-                laplace_matrix.vmult(tmp, old_solution);
-                system_rhs.add(-(1 - theta) * dt, tmp);
-
-                rhs_function.set_time(t_new);
-                VectorTools::create_right_hand_side(dof_handler,
-                                                    QGauss<dim>(fe.degree + 1),
-                                                    rhs_function,
-                                                    tmp);
-                forcing_terms = tmp;
-                forcing_terms *= dt * theta;
-
-                rhs_function.set_time(time);
-                VectorTools::create_right_hand_side(dof_handler,
-                                                    QGauss<dim>(fe.degree + 1),
-                                                    rhs_function,
-                                                    tmp);
-                forcing_terms.add(dt * (1 - theta), tmp);
-
-                system_rhs += forcing_terms;
-                system_matrix.copy_from(mass_matrix);
-                system_matrix.add(theta * dt, laplace_matrix);
-                constraints.condense(system_matrix, system_rhs);
-
-                // >>> BC CORRETTA: Neumann omogenea (naturale) => NON si impone nulla qui <<<
-
-                solve_time_step();
-
-                time = t_new;
-                ++timestep_number;
-                old_solution = solution;
-                std::cout << "Heuristic step " << timestep_number << " at t=" << time
-                          << "  dt=" << dt << "  err_est=" << error_est << std::endl;
-                output_results();
-
-                if ((timestep_number == 1) &&
-                        (pre_refinement_step < n_adaptive_pre_refinement_steps) && use_space_adaptivity)
-                      {
-                        refine_mesh(initial_global_refinement,
-                                    initial_global_refinement +
-                                      n_adaptive_pre_refinement_steps);
-                        ++pre_refinement_step;
-
-                        std::cout << std::endl;
-
-                        goto start_time_iteration;
-                      }
-                    else if ((timestep_number > 0) && (timestep_number % 5 == 0) && use_space_adaptivity)
-                      {
-                        refine_mesh(initial_global_refinement,
-                                    initial_global_refinement +
-                                      n_adaptive_pre_refinement_steps);
-                        tmp.reinit(solution.size());
-                        forcing_terms.reinit(solution.size());
-                      }
-
-                double factor = 1.0;
-                if (error_est > 2.0 * tol)
-                  factor = 0.5;
-                else if (error_est < 0.25 * tol)
-                  factor = 2.0;
-
-                double dt_new = dt * factor * time_step_safety;
-                dt_new = std::min(std::max(dt_new, time_step_min), time_step_max);
-                time_step = dt_new;
-              }
+            std::cout << "Time step rejected at t=" << time
+                      << "  dt_old=" << dt
+                      << "  error=" << error
+                      << "  new_dt=" << time_step << std::endl;
           }
+        }
+        else
+        {
+          const double t_new = time + dt;
+
+          Vector<double> rhs_new(solution.size());
+          RightHandSide<dim> rhs_function;
+
+          rhs_function.set_time(t_new);
+          VectorTools::create_right_hand_side(dof_handler,
+                                              QGauss<dim>(fe.degree + 1),
+                                              rhs_function,
+                                              rhs_new);
+
+          Vector<double> rhs_old(solution.size());
+          rhs_function.set_time(time);
+          VectorTools::create_right_hand_side(dof_handler,
+                                              QGauss<dim>(fe.degree + 1),
+                                              rhs_function,
+                                              rhs_old);
+
+          Vector<double> rhs_diff = rhs_new;
+          rhs_diff -= rhs_old;
+
+          const double rhs_diff_norm = rhs_diff.l2_norm();
+          const double rhs_norm      = std::max(1.0, rhs_new.l2_norm());
+
+          const double error_est = dt * rhs_diff_norm / rhs_norm;
+          const double tol       = time_step_tolerance;
+
+          mass_matrix.vmult(system_rhs, old_solution);
+
+          laplace_matrix.vmult(tmp, old_solution);
+          system_rhs.add(-(1.0 - theta) * dt, tmp);
+
+          rhs_function.set_time(t_new);
+          VectorTools::create_right_hand_side(dof_handler,
+                                              QGauss<dim>(fe.degree + 1),
+                                              rhs_function,
+                                              tmp);
+          forcing_terms = tmp;
+          forcing_terms *= dt * theta;
+
+          rhs_function.set_time(time);
+          VectorTools::create_right_hand_side(dof_handler,
+                                              QGauss<dim>(fe.degree + 1),
+                                              rhs_function,
+                                              tmp);
+          forcing_terms.add(dt * (1.0 - theta), tmp);
+
+          system_rhs += forcing_terms;
+
+          system_matrix.copy_from(mass_matrix);
+          system_matrix.add(theta * dt, laplace_matrix);
+          constraints.condense(system_matrix, system_rhs);
+
+          solve_time_step();
+
+          time = t_new;
+          ++timestep_number;
+          old_solution = solution;
+
+          std::cout << "Heuristic step " << timestep_number
+                    << " at t=" << time
+                    << "  dt=" << dt
+                    << "  err_est=" << error_est << std::endl;
+
+          output_results();
+
+          if ((timestep_number > 0) && (timestep_number % 5 == 0) && use_space_adaptivity)
+          {
+            refine_mesh(initial_global_refinement,
+                        initial_global_refinement + n_adaptive_pre_refinement_steps);
+
+            tmp.reinit(solution.size());
+            forcing_terms.reinit(solution.size());
+          }
+
+          double factor = 1.0;
+          if (error_est > 2.0 * tol)
+            factor = 0.5;
+          else if (error_est < 0.25 * tol)
+            factor = 2.0;
+
+          double dt_new = dt * factor * time_step_safety;
+          dt_new = std::min(std::max(dt_new, time_step_min), time_step_max);
+          time_step = dt_new;
+        }
       }
     }
+  }
+
 } // namespace Progetto
 
 int main()
 {
   try
+  {
+    clear_solutions_folder();
+    using namespace Progetto;
+
+    const bool mesh = ask_bool("Vuoi generare una mesh o importarla da file?");
+    int cells_per_direction = 0;
+
+    if (mesh)
     {
-      clear_solutions_folder();
-      using namespace Progetto;
-
-      bool mesh = ask_bool("Vuoi generare una mesh o importarla da file?");
-      int cells_per_direction = 0;
-      if (mesh)
-          {
-            std::cout << "Inserisci il numero di celle per direzione (intero positivo): ";
-            std::cin >> cells_per_direction;
-            if (cells_per_direction <= 0)
-              {
-                std::cerr << "Numero di celle non valido. Deve essere un intero positivo." << std::endl;
-                return 1;
-              }
-            std::cout << "Generazione di una mesh con " << cells_per_direction << " celle per direzione." << std::endl;
-          }
-      else
-          {
-            cells_per_direction = 0;
-          }
-
-      bool space = ask_bool("Vuoi abilitare l'adattività spaziale?");
-      bool time = ask_bool("Vuoi abilitare l'adattività temporale?");
-      if (time)
-          {
-            bool type = ask_bool("Se sì, vuoi usare lo step-doubling? (altrimenti verrà usata l'euristica economica)");
-
-            HeatEquation<2> heat_equation_solver(space, time, type, mesh, cells_per_direction);
-            heat_equation_solver.run();
-          }
-        else
-          {
-            HeatEquation<2> heat_equation_solver(space, time, false, mesh, cells_per_direction);
-            heat_equation_solver.run();
-          }
+      std::cout << "Inserisci il numero di celle per direzione (intero positivo): ";
+      std::cin >> cells_per_direction;
+      if (cells_per_direction <= 0)
+      {
+        std::cerr << "Numero di celle non valido. Deve essere un intero positivo." << std::endl;
+        return 1;
+      }
+      std::cout << "Generazione di una mesh con " << cells_per_direction
+                << " celle per direzione." << std::endl;
     }
+
+    const bool space = ask_bool("Vuoi abilitare l'adattività spaziale?");
+    const bool time  = ask_bool("Vuoi abilitare l'adattività temporale?");
+
+    if (time)
+    {
+      const bool type = ask_bool("Se sì, vuoi usare lo step-doubling? (altrimenti verrà usata l'euristica economica)");
+      HeatEquation<2> heat_equation_solver(space, time, type, mesh, cells_per_direction);
+      heat_equation_solver.run();
+    }
+    else
+    {
+      HeatEquation<2> heat_equation_solver(space, time, false, mesh, cells_per_direction);
+      heat_equation_solver.run();
+    }
+  }
   catch (std::exception &exc)
-    {
-      std::cerr << std::endl
-                << std::endl
-                << "----------------------------------------------------"
-                << std::endl;
-      std::cerr << "Exception on processing: " << std::endl
-                << exc.what() << std::endl
-                << "Aborting!" << std::endl
-                << "----------------------------------------------------"
-                << std::endl;
-
-      return 1;
-    }
+  {
+    std::cerr << "\n\n----------------------------------------------------\n";
+    std::cerr << "Exception on processing:\n" << exc.what() << "\nAborting!\n";
+    std::cerr << "----------------------------------------------------\n";
+    return 1;
+  }
   catch (...)
-    {
-      std::cerr << std::endl
-                << std::endl
-                << "----------------------------------------------------"
-                << std::endl;
-      std::cerr << "Unknown exception!" << std::endl
-                << "Aborting!" << std::endl
-                << "----------------------------------------------------"
-                << std::endl;
-      return 1;
-    }
+  {
+    std::cerr << "\n\n----------------------------------------------------\n";
+    std::cerr << "Unknown exception!\nAborting!\n";
+    std::cerr << "----------------------------------------------------\n";
+    return 1;
+  }
 
   return 0;
 }
-
