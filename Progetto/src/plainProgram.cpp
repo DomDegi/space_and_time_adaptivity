@@ -37,6 +37,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <sstream> // (aggiunto) per parsing input
 
 void clear_solutions_folder()
 {
@@ -65,6 +66,47 @@ bool ask_bool(const std::string &question)
     }
 }
 
+// (aggiunto) input numerico con default: premi INVIO per tenere il default
+double ask_double_default(const std::string &question, const double default_value)
+{
+    while (true)
+    {
+        std::cout << question << " [default=" << default_value << "]: ";
+        std::string line;
+        std::getline(std::cin >> std::ws, line);
+
+        if (line.empty())
+            return default_value;
+
+        std::stringstream ss(line);
+        double v;
+        if (ss >> v)
+            return v;
+
+        std::cout << "Input non valido. Riprova.\n";
+    }
+}
+
+unsigned int ask_uint_default(const std::string &question, const unsigned int default_value)
+{
+    while (true)
+    {
+        std::cout << question << " [default=" << default_value << "]: ";
+        std::string line;
+        std::getline(std::cin >> std::ws, line);
+
+        if (line.empty())
+            return default_value;
+
+        std::stringstream ss(line);
+        int v;
+        if ((ss >> v) && v > 0)
+            return static_cast<unsigned int>(v);
+
+        std::cout << "Input non valido. Inserisci un intero positivo.\n";
+    }
+}
+
 namespace Progetto
 {
   using namespace dealii;
@@ -77,7 +119,12 @@ namespace Progetto
                  bool time_adaptivity,
                  bool step_doubling,
                  bool mesh,
-                 int  cells_per_direction);
+                 int  cells_per_direction,
+                 unsigned int rhs_N_in,
+                 double rhs_sigma_in,
+                 double rhs_x0_x_in,
+                 double rhs_x0_y_in,
+                 double end_time_in);
 
     void run();
 
@@ -129,6 +176,14 @@ namespace Progetto
     bool use_mesh;
     int  cells_per_direction;
 
+    // (aggiunto) parametri forcing richiesti come input
+    unsigned int rhs_N;
+    double rhs_sigma;
+    Point<dim> rhs_x0;
+
+    // (aggiunto) tempo finale T come input
+    double end_time;
+
     PreconditionSSOR<SparseMatrix<double>> preconditioner;
   };
 
@@ -136,16 +191,22 @@ namespace Progetto
   class RightHandSide : public Function<dim>
   {
   public:
-    RightHandSide()
+    RightHandSide(const unsigned int N_in,
+                  const double sigma_in,
+                  const Point<dim> &x0_in)
       : Function<dim>()
-      , period(0.2)
+      , N(N_in)
+      , sigma(sigma_in)
+      , x0(x0_in)
     {}
 
     virtual double value(const Point<dim>  &p,
                          const unsigned int component = 0) const override;
 
   private:
-    const double period;
+    const unsigned int N;
+    const double sigma;
+    const Point<dim> x0;
   };
 
   template <int dim>
@@ -158,15 +219,8 @@ namespace Progetto
 
     const double time = this->get_time();
 
-    const double a     = 5.0;
-    const unsigned int N = 5;
-
-    // sigma della sorgente (come nel tuo file originale)
-    const double sigma = 0.5;
-
-    Point<dim> x0;
-    x0[0] = 0.5;
-    x0[1] = 0.5;
+    // (lasciato com'è): a fissato
+    const double a = 5.0;
 
     const double g =
       std::exp(-a * std::cos(2.0 * N * numbers::PI * time)) / std::exp(a);
@@ -204,7 +258,12 @@ namespace Progetto
                                  bool time_adaptivity,
                                  bool step_doubling,
                                  bool mesh,
-                                 int  cells_per_direction)
+                                 int  cells_per_direction,
+                                 unsigned int rhs_N_in,
+                                 double rhs_sigma_in,
+                                 double rhs_x0_x_in,
+                                 double rhs_x0_y_in,
+                                 double end_time_in)
     : fe(1)
     , dof_handler(triangulation)
     , time_step(1. / 500.0)
@@ -219,7 +278,13 @@ namespace Progetto
     , theta(0.5)
     , use_mesh(mesh)
     , cells_per_direction(cells_per_direction)
-  {}
+    , rhs_N(rhs_N_in)
+    , rhs_sigma(rhs_sigma_in)
+    , end_time(end_time_in)
+  {
+    rhs_x0[0] = rhs_x0_x_in;
+    rhs_x0[1] = rhs_x0_y_in;
+  }
 
   template <int dim>
   void HeatEquation<dim>::setup_system()
@@ -293,7 +358,7 @@ namespace Progetto
     laplace_matrix.vmult(tmp, u_old);
     system_rhs.add(-(1.0 - theta) * dt, tmp);
 
-    RightHandSide<dim> rhs_function;
+    RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_x0);
 
     rhs_function.set_time(t_new);
     VectorTools::create_right_hand_side(dof_handler,
@@ -365,6 +430,47 @@ namespace Progetto
 
     for (const auto &cell : triangulation.active_cell_iterators_on_level(min_grid_level))
       cell->clear_coarsen_flag();
+
+    // (aggiunto) LOG MINIMO indispensabile per report (2.7)
+    {
+      unsigned int marked_refine  = 0;
+      unsigned int marked_coarsen = 0;
+      for (const auto &cell : triangulation.active_cell_iterators())
+      {
+        if (cell->refine_flag_set())
+          ++marked_refine;
+        if (cell->coarsen_flag_set())
+          ++marked_coarsen;
+      }
+
+      const unsigned int n_cells  = triangulation.n_active_cells();
+      const unsigned int n_dofs   = dof_handler.n_dofs();
+      const unsigned int n_levels = triangulation.n_levels();
+
+      std::cout << "[AMR] refine_mesh at t=" << time
+                << " (step " << timestep_number << ")"
+                << " | active_cells=" << n_cells
+                << " dofs=" << n_dofs
+                << " levels=" << n_levels
+                << " | marked_refine=" << marked_refine
+                << " marked_coarsen=" << marked_coarsen
+                << std::endl;
+
+      std::filesystem::create_directories("solutions");
+      const std::string log_path = "solutions/mesh_log.csv";
+      const bool write_header = !std::filesystem::exists(log_path);
+
+      std::ofstream log(log_path, std::ios::app);
+      if (write_header)
+        log << "timestep,time,active_cells,dofs,levels,marked_refine,marked_coarsen\n";
+      log << timestep_number << ","
+          << time << ","
+          << n_cells << ","
+          << n_dofs << ","
+          << n_levels << ","
+          << marked_refine << ","
+          << marked_coarsen << "\n";
+    }
 
     SolutionTransfer<dim> solution_trans(dof_handler);
 
@@ -454,7 +560,31 @@ namespace Progetto
     Vector<double> tmp(solution.size());
     Vector<double> forcing_terms(solution.size());
 
-    const double end_time = 0.5;
+    // (cambiato) end_time ora è input (membro)
+    // double end_time = ...;  <-- rimosso
+
+    // (aggiunto) LOG MINIMO indispensabile time-adaptivity (4.11)
+    auto write_time_log = [&](const double t_now,
+                              const double dt_now,
+                              const int accepted,
+                              const double err_est,
+                              const double new_dt)
+    {
+      std::filesystem::create_directories("solutions");
+      const std::string log_path = "solutions/time_log.csv";
+      const bool write_header = !std::filesystem::exists(log_path);
+
+      std::ofstream log(log_path, std::ios::app);
+      if (write_header)
+        log << "timestep,time,dt,accepted,error_est,new_dt\n";
+
+      log << timestep_number << ","
+          << t_now << ","
+          << dt_now << ","
+          << accepted << ","
+          << err_est << ","
+          << new_dt << "\n";
+    };
 
     if (!use_time_adaptivity)
     {
@@ -475,7 +605,7 @@ namespace Progetto
         laplace_matrix.vmult(tmp, old_solution);
         system_rhs.add(-(1.0 - theta) * dt, tmp);
 
-        RightHandSide<dim> rhs_function;
+        RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_x0);
 
         rhs_function.set_time(time);
         VectorTools::create_right_hand_side(dof_handler,
@@ -573,6 +703,9 @@ namespace Progetto
             double dt_new = dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
             dt_new = std::min(std::max(dt_new, time_step_min), time_step_max);
             time_step = dt_new;
+
+            // (aggiunto) log minimo per report: accepted
+            write_time_log(time, dt, 1, error, time_step);
           }
           else
           {
@@ -587,6 +720,9 @@ namespace Progetto
                       << "  dt_old=" << dt
                       << "  error=" << error
                       << "  new_dt=" << time_step << std::endl;
+
+            // (aggiunto) log minimo per report: rejected (t resta quello corrente)
+            write_time_log(time, dt, 0, error, time_step);
           }
         }
         else
@@ -594,7 +730,7 @@ namespace Progetto
           const double t_new = time + dt;
 
           Vector<double> rhs_new(solution.size());
-          RightHandSide<dim> rhs_function;
+          RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_x0);
 
           rhs_function.set_time(t_new);
           VectorTools::create_right_hand_side(dof_handler,
@@ -675,6 +811,9 @@ namespace Progetto
           double dt_new = dt * factor * time_step_safety;
           dt_new = std::min(std::max(dt_new, time_step_min), time_step_max);
           time_step = dt_new;
+
+          // (aggiunto) log minimo per report: heuristic (sempre accepted)
+          write_time_log(time, dt, 1, error_est, time_step);
         }
       }
     }
@@ -708,15 +847,24 @@ int main()
     const bool space = ask_bool("Vuoi abilitare l'adattività spaziale?");
     const bool time  = ask_bool("Vuoi abilitare l'adattività temporale?");
 
+    // (aggiunto) SOLO input richiesti: T, sigma, x0_x, x0_y, N
+    const double T_end       = ask_double_default("Inserisci T (tempo finale)", 0.5);
+    const double sigma       = ask_double_default("Inserisci sigma (delta) della sorgente", 0.5);
+    const double x0_x        = ask_double_default("Inserisci x0_x (centro sorgente)", 0.5);
+    const double x0_y        = ask_double_default("Inserisci x0_y (centro sorgente)", 0.5);
+    const unsigned int N_val = ask_uint_default("Inserisci N (frequenza temporale g(t))", 5);
+
     if (time)
     {
       const bool type = ask_bool("Se sì, vuoi usare lo step-doubling? (altrimenti verrà usata l'euristica economica)");
-      HeatEquation<2> heat_equation_solver(space, time, type, mesh, cells_per_direction);
+      HeatEquation<2> heat_equation_solver(space, time, type, mesh, cells_per_direction,
+                                           N_val, sigma, x0_x, x0_y, T_end);
       heat_equation_solver.run();
     }
     else
     {
-      HeatEquation<2> heat_equation_solver(space, time, false, mesh, cells_per_direction);
+      HeatEquation<2> heat_equation_solver(space, time, false, mesh, cells_per_direction,
+                                           N_val, sigma, x0_x, x0_y, T_end);
       heat_equation_solver.run();
     }
   }
@@ -737,3 +885,4 @@ int main()
 
   return 0;
 }
+
