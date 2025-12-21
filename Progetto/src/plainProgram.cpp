@@ -778,10 +778,24 @@ namespace Progetto
             solution = u_two;
             old_solution = solution;
 
-            std::cout << "[" << run_name << "] Time step " << timestep_number
-                      << " accepted at t=" << time
-                      << "  dt=" << dt
-                      << "  error=" << error << "\n";
+            if (hit_min_dt && error > tol_scaled) {
+            std::cout << "\n   !!! FORCED ACCEPTANCE AT MIN_DT !!!\n"
+                         << "   -------------------------------------------\n"
+                         << "   Time (t)          : " << time << "\n"
+                         << "   Step (dt)         : " << dt << " (= time_step_min)\n"
+                         << "   Abs. Error        : " << error << "\n"
+                         << "   Target Tolerance  : " << tol_scaled << "\n"
+                         << "   Mesh Status       : " << triangulation.n_active_cells() << " cells, "
+                                                      << dof_handler.n_dofs() << " DoFs\n"
+                         << "   -------------------------------------------\n";
+            }
+            else
+            {
+              std::cout << "[" << run_name << "] Time step " << timestep_number
+                        << " accepted at t=" << time
+                        << "  dt=" << dt
+                        << "  error=" << error << "\n";
+            }
 
             stats.register_time_step_attempt(dt, true);
             stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
