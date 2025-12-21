@@ -770,8 +770,9 @@ namespace Progetto
           const double sol_norm   = std::max(1.0, u_two.l2_norm());
           const double tol_scaled = time_step_tolerance * sol_norm + 1e-16;
 
-          if (error <= tol_scaled)
-          {
+          const bool hit_min_dt = (dt <= time_step_min * 1.000001); // avoids infinite rejection loop
+
+          if (error <= tol_scaled || hit_min_dt) {
             time = t_one;
             ++timestep_number;
             solution = u_two;
