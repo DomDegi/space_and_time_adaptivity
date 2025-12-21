@@ -268,8 +268,8 @@ namespace Progetto
     bool use_time_adaptivity = false;
     bool use_step_doubling   = false;
 
-    double time_step_tolerance = 1e-8;
-    double time_step_min       = 1e-6;
+    double time_step_tolerance = 1e-6;
+    double time_step_min       = 1e-4;
     double time_step_max       = 1e-1;
     double time_step_safety    = 0.9;
 
