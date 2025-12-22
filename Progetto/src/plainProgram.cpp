@@ -206,10 +206,11 @@ namespace Progetto
                  double rhs_a_in,
                  double rhs_x0_x_in,
                  double rhs_x0_y_in,
-                 double material_diffusion_in, 
+                 double material_diffusion_in,
                  double material_mass_in,
                  double theta_in,
                  double time_step_tolerance_in,
+                 double time_step_min_in,
                  double end_time_in,
                  double initial_dt_in,
                  unsigned int initial_global_refinement_in,
@@ -275,12 +276,12 @@ namespace Progetto
     bool use_time_adaptivity = false;
     bool use_step_doubling   = false;
 
-    double time_step_tolerance; // Set via constructor
-    double time_step_min       = 1e-4;
+    double time_step_tolerance;
+    double time_step_min;
     double time_step_max       = 1e-1;
     double time_step_safety    = 0.9;
 
-    const double theta; // Set via constructor
+    const double theta;
 
     // Material parameters
     double material_diffusion;
@@ -379,6 +380,7 @@ namespace Progetto
                                  double material_mass_in,
                                  double theta_in,
                                  double time_step_tolerance_in,
+                                 double time_step_min_in,
                                  double end_time_in,
                                  double initial_dt_in,
                                  unsigned int initial_global_refinement_in,
@@ -408,6 +410,7 @@ namespace Progetto
     material_diffusion = material_diffusion_in;
     material_mass      = material_mass_in;
     time_step_tolerance = time_step_tolerance_in;
+    time_step_min       = time_step_min_in;
 
     end_time = end_time_in;
     time_step = initial_dt_in;
@@ -1039,21 +1042,23 @@ int main()
     // 2. Ask for Solver / Time Adaptivity Settings
     double user_theta = 0.5;
     double user_tol   = 1e-6;
+    double user_dt_min = 1e-4;
 
-    const bool change_solver = ask_bool("Do you want to customize solver & time adaptivity settings (Theta, Tolerance)?");
+    const bool change_solver = ask_bool("Do you want to customize solver & time adaptivity settings (Theta, Tolerance, Min DT)?");
     if (change_solver)
     {
         std::cout << "--- Solver Settings ---\n"
-                  << "Defaults: Theta=0.5 (Crank-Nicolson), Tolerance=1e-6.\n"
+                  << "Defaults: Theta=0.5 (Crank-Nicolson), Tolerance=1e-6, Min DT=1e-4.\n"
                   << "WARNING: Very small tolerances (<1e-8) or explicit schemes (Theta=0) may cause extreme slowness or instability depending on hardware.\n";
 
         user_theta = ask_double_default("Enter Theta (0.0=Explicit Euler, 0.5=Crank-Nicolson, 1.0=Implicit Euler)", 0.5);
         user_tol   = ask_double_default("Enter Time Step Tolerance", 1e-6);
+        user_dt_min = ask_double_default("Enter Minimum Time Step (dt_min)", 1e-4);
         std::cout << "-----------------------\n";
     }
     else
     {
-        std::cout << "Using default solver settings (Theta=0.5, Tolerance=1e-6).\n";
+        std::cout << "Using default solver settings (Theta=0.5, Tol=1e-6, dt_min=1e-4).\n";
     }
 
     // --- Fixed internal params ---
@@ -1090,7 +1095,7 @@ int main()
         mesh,
         ref_cells,
         N_val, sigma, a_val, x0_x, x0_y,
-        user_diffusion, user_mass, user_theta, user_tol, // <--- New Params
+        user_diffusion, user_mass, user_theta, user_tol, user_dt_min, // <--- New Params
         T_end,
         dt_ref,
         ref_refine,
@@ -1128,7 +1133,7 @@ int main()
           mesh,
           cells_per_direction,
           N_val, sigma, a_val, x0_x, x0_y,
-          user_diffusion, user_mass, user_theta, user_tol, // <--- New Params
+          user_diffusion, user_mass, user_theta, user_tol, user_dt_min,
           T_end,
           dt0,
           base_refine,
