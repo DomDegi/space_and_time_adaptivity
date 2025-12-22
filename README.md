@@ -131,3 +131,16 @@ Results are saved in the `build/solutions/` directory:
 * **VTK Files:** `solution-00001.vtk`, etc. (Open with Paraview or VisIt).
 * **CSV Logs:** `time_log.csv` (step sizes) and `mesh_log.csv` (DoF counts).
 * **Summary:** `summary_comparison.csv` (created in Mode 0 for performance analysis).
+
+---
+
+## Documentation
+
+This project uses **Doxygen** to generate code documentation and dependency graphs.
+
+### Generation
+Since Doxygen is already available in the container, simply run the following command in the project root:
+```bash
+doxygen Doxyfile
+```
+You can view the documentation by opening the index.html file located in docs/html/ inside your browser.
