@@ -206,6 +206,10 @@ namespace Progetto
                  double rhs_a_in,
                  double rhs_x0_x_in,
                  double rhs_x0_y_in,
+                 double material_diffusion_in, 
+                 double material_mass_in,
+                 double theta_in,
+                 double time_step_tolerance_in,
                  double end_time_in,
                  double initial_dt_in,
                  unsigned int initial_global_refinement_in,
@@ -271,12 +275,16 @@ namespace Progetto
     bool use_time_adaptivity = false;
     bool use_step_doubling   = false;
 
-    double time_step_tolerance = 1e-6;
+    double time_step_tolerance; // Set via constructor
     double time_step_min       = 1e-4;
     double time_step_max       = 1e-1;
     double time_step_safety    = 0.9;
 
-    const double theta;
+    const double theta; // Set via constructor
+
+    // Material parameters
+    double material_diffusion;
+    double material_mass;
 
     bool use_mesh = true;
     int  cells_per_direction = 0;
@@ -338,8 +346,6 @@ namespace Progetto
     Assert(dim == 2, ExcNotImplemented());
 
     const double time = this->get_time();
-    // const double a = 2.0; // REMOVED (now using member variable 'a')
-
     const double g =
       std::exp(-a * std::cos(2.0 * N * numbers::PI * time)) / std::exp(a);
 
@@ -369,6 +375,10 @@ namespace Progetto
                                  double rhs_a_in,
                                  double rhs_x0_x_in,
                                  double rhs_x0_y_in,
+                                 double material_diffusion_in,
+                                 double material_mass_in,
+                                 double theta_in,
+                                 double time_step_tolerance_in,
                                  double end_time_in,
                                  double initial_dt_in,
                                  unsigned int initial_global_refinement_in,
@@ -377,7 +387,7 @@ namespace Progetto
                                  bool write_vtk_in)
     : fe(1)
     , dof_handler(triangulation)
-    , theta(0.5)
+    , theta(theta_in)
   {
     run_name = run_name_in;
     output_dir = output_dir_in;
@@ -395,8 +405,11 @@ namespace Progetto
     rhs_x0[0] = rhs_x0_x_in;
     rhs_x0[1] = rhs_x0_y_in;
 
-    end_time = end_time_in;
+    material_diffusion = material_diffusion_in;
+    material_mass      = material_mass_in;
+    time_step_tolerance = time_step_tolerance_in;
 
+    end_time = end_time_in;
     time_step = initial_dt_in;
 
     initial_global_refinement = initial_global_refinement_in;
@@ -431,17 +444,14 @@ namespace Progetto
     MatrixCreator::create_mass_matrix(dof_handler,
                                       QGauss<dim>(fe.degree + 1),
                                       mass_matrix);
-
-    const double d = 1.0;
-    const double c = 1.0;
-    mass_matrix *= c * d;
+    // Use user-defined mass coefficient
+    mass_matrix *= material_mass;
 
     MatrixCreator::create_laplace_matrix(dof_handler,
                                          QGauss<dim>(fe.degree + 1),
                                          laplace_matrix);
-
-    const double k = 1.0;
-    laplace_matrix *= k;
+    // Use user-defined diffusion coefficient
+    laplace_matrix *= material_diffusion;
 
     solution.reinit(dof_handler.n_dofs());
     old_solution.reinit(dof_handler.n_dofs());
@@ -465,8 +475,6 @@ namespace Progetto
     const unsigned int its = solver_control.last_step();
     stats.n_linear_solves++;
     stats.register_cg_iterations(its);
-
-    // std::cout << "     " << its << " CG iterations.\n"; // Optional: comment out to reduce spam
   }
 
   template <int dim>
@@ -483,7 +491,6 @@ namespace Progetto
     laplace_matrix.vmult(tmp, u_old);
     system_rhs.add(-(1.0 - theta) * dt, tmp);
 
-    // Pass 'rhs_a' to the RightHandSide constructor
     RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_a, rhs_x0);
 
     rhs_function.set_time(t_new);
@@ -856,7 +863,7 @@ namespace Progetto
           const double t_new = time + dt;
 
           Vector<double> rhs_new(solution.size());
-          RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_a, rhs_x0); // Pass rhs_a
+          RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_a, rhs_x0);
 
           rhs_function.set_time(t_new);
           VectorTools::create_right_hand_side(dof_handler,
@@ -988,8 +995,7 @@ int main()
     clear_solutions_folder();
     using namespace Progetto;
 
-    // --- Translated and Updated Prompts ---
-
+    // --- Grid / Mesh ---
     const bool mesh = ask_bool("Do you want to generate a grid inside the program? (answer 'n' to load from file)");
     int cells_per_direction = 0;
 
@@ -1005,13 +1011,52 @@ int main()
       std::cout << "Generating a mesh with " << cells_per_direction << " cells per direction.\n";
     }
 
+    // --- Equation Physical Parameters ---
     const double T_end       = ask_double_default("Enter T (final time)", 0.5);
     const double sigma       = ask_double_default("Enter source width sigma", 0.5);
     const double x0_x        = ask_double_default("Enter source center x0_x", 0.5);
     const double x0_y        = ask_double_default("Enter source center x0_y", 0.5);
     const unsigned int N_val = ask_uint_default("Enter N (source frequency term)", 5);
-    const double a_val       = ask_double_default("Enter parameter 'A' (oscillation magnitude)", 5.0); // <--- ASK FOR A
+    const double a_val       = ask_double_default("Enter parameter 'A' (oscillation magnitude)", 5.0);
 
+    // 1. Ask for Physical Coefficients
+    double user_diffusion = 1.0;
+    double user_mass      = 1.0;
+
+    const bool change_physics = ask_bool("Do you want to customize physical material coefficients (Diffusion/Reaction)?");
+    if (change_physics)
+    {
+      std::cout << "--- Material Properties ---\n";
+      user_diffusion = ask_double_default("Enter Diffusion coefficient (k)", 1.0);
+      user_mass      = ask_double_default("Enter Reaction/Mass coefficient (c)", 1.0);
+      std::cout << "---------------------------\n";
+    }
+    else
+    {
+      std::cout << "Using default material coefficients (k=1.0, c=1.0).\n";
+    }
+
+    // 2. Ask for Solver / Time Adaptivity Settings
+    double user_theta = 0.5;
+    double user_tol   = 1e-6;
+
+    const bool change_solver = ask_bool("Do you want to customize solver & time adaptivity settings (Theta, Tolerance)?");
+    if (change_solver)
+    {
+        std::cout << "--- Solver Settings ---\n"
+                  << "Defaults: Theta=0.5 (Crank-Nicolson), Tolerance=1e-6.\n"
+                  << "WARNING: Very small tolerances (<1e-8) or explicit schemes (Theta=0) may cause extreme slowness or instability depending on hardware.\n";
+
+        user_theta = ask_double_default("Enter Theta (0.0=Explicit Euler, 0.5=Crank-Nicolson, 1.0=Implicit Euler)", 0.5);
+        user_tol   = ask_double_default("Enter Time Step Tolerance", 1e-6);
+        std::cout << "-----------------------\n";
+    }
+    else
+    {
+        std::cout << "Using default solver settings (Theta=0.5, Tolerance=1e-6).\n";
+    }
+
+    // --- Fixed internal params ---
     const double dt0 = 1.0 / 500.0;
     const unsigned int base_refine = 2;
     const unsigned int pre_steps   = 4;
@@ -1035,6 +1080,7 @@ int main()
       if (mesh)
         ref_cells = static_cast<int>(std::max(1, cells_per_direction * 2));
 
+      // Pass user custom params to reference solver
       reference_solver = std::make_unique<HeatEquation<2>>(
         "reference",
         "solutions/reference",
@@ -1043,7 +1089,9 @@ int main()
         false,
         mesh,
         ref_cells,
-        N_val, sigma, a_val, x0_x, x0_y, T_end, // Pass a_val
+        N_val, sigma, a_val, x0_x, x0_y,
+        user_diffusion, user_mass, user_theta, user_tol, // <--- New Params
+        T_end,
         dt_ref,
         ref_refine,
         0,
@@ -1070,6 +1118,7 @@ int main()
       {
         std::string outdir = "solutions/" + name;
 
+        // Pass user custom params to solvers
         HeatEquation<2> solver(
           name,
           outdir,
@@ -1078,7 +1127,9 @@ int main()
           use_sd,
           mesh,
           cells_per_direction,
-          N_val, sigma, a_val, x0_x, x0_y, T_end, // Pass a_val
+          N_val, sigma, a_val, x0_x, x0_y,
+          user_diffusion, user_mass, user_theta, user_tol, // <--- New Params
+          T_end,
           dt0,
           base_refine,
           pre_steps,
