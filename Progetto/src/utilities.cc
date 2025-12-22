@@ -1,3 +1,8 @@
+/**
+ * @file utilities.cc
+ * @brief Implementation of helper functions defined in utilities.h.
+ */
+
 #include "utilities.h"
 #include <iostream>
 #include <fstream>
@@ -6,7 +11,10 @@
 
 void clear_solutions_folder()
 {
+  // Ensure the directory exists
   std::filesystem::create_directories("solutions");
+
+  // Iterate over directory entries and remove them
   for (const auto &entry : std::filesystem::directory_iterator("solutions"))
     std::filesystem::remove_all(entry.path());
 }
@@ -19,11 +27,14 @@ bool ask_bool(const std::string &question)
     std::string input;
     std::cin >> input;
 
+    // Normalize input to lowercase for case-insensitive comparison
     std::transform(input.begin(), input.end(), input.begin(), ::tolower);
 
+    // Check for affirmative answers (English and Italian common usage)
     if (input == "y" || input == "yes" || input == "1" || input == "s" || input == "si")
       return true;
 
+    // Check for negative answers
     if (input == "n" || input == "no" || input == "0")
       return false;
 
@@ -37,6 +48,7 @@ double ask_double_default(const std::string &question, const double default_valu
   {
     std::cout << question << " [default=" << default_value << "]: ";
     std::string line;
+    // Read the full line to handle empty input (just Enter)
     std::getline(std::cin >> std::ws, line);
 
     if (line.empty())
@@ -44,6 +56,7 @@ double ask_double_default(const std::string &question, const double default_valu
 
     std::stringstream ss(line);
     double v;
+    // Check if parsing to double is successful
     if (ss >> v)
       return v;
 
@@ -64,6 +77,7 @@ unsigned int ask_uint_default(const std::string &question, const unsigned int de
 
     std::stringstream ss(line);
     int v;
+    // Parse as int first to check for negative numbers, then cast
     if ((ss >> v) && v >= 0)
       return static_cast<unsigned int>(v);
 

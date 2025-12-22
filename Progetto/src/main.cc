@@ -1,3 +1,11 @@
+/**
+ * @file main.cc
+ * @brief Main entry point for the Heat Equation simulation project.
+ *
+ * Handles user input, parameter configuration, and executes the simulation
+ * in various modes (Fixed/Adaptive Space/Time).
+ */
+
 #include "heat_equation.h"
 #include "utilities.h"
 #include <deal.II/numerics/fe_field_function.h>
@@ -7,7 +15,13 @@
 #include <memory>
 #include <filesystem>
 
-// Helper to write CSV comparison stats
+/**
+ * @brief Appends simulation statistics to a central CSV file for comparison.
+ * * @param path Path to the CSV file.
+ * @param config_name Label for the current run configuration.
+ * @param l2_error_T The final L2 error against the reference solution.
+ * @param st The statistics structure gathered during the run.
+ */
 static void append_comparison_csv(const std::string &path,
                                   const std::string &config_name,
                                   const double l2_error_T,
@@ -57,7 +71,7 @@ int main()
     clear_solutions_folder();
     using namespace Progetto;
 
-    // --- Grid / Mesh ---
+    // --- Grid / Mesh Input ---
     const bool mesh = ask_bool("Do you want to generate a grid inside the program? (answer 'n' to load from file)");
     int cells_per_direction = 0;
 
@@ -134,19 +148,21 @@ int main()
     unsigned int run_mode = ask_uint_default("Enter selection", 0);
     if (run_mode > 4) run_mode = 0;
 
-    // Fixed internal params
+    // --- Hardcoded Internal Parameters (Calibration) ---
     const double dt0 = 1.0 / 500.0;
     const unsigned int base_refine = 2;
     const unsigned int pre_steps   = 4;
     const unsigned int refine_every = 5;
     const bool write_vtk = true;
 
+    // Reference solver parameters (higher resolution)
     const double dt_ref = dt0 / 10.0;
     const unsigned int ref_refine = base_refine + 2;
 
     std::unique_ptr<HeatEquation<2>> reference_solver;
     std::unique_ptr<dealii::Functions::FEFieldFunction<2>> reference_function;
 
+    // Determine if Reference Run is needed
     bool run_reference = false;
     if (run_mode == 0) run_reference = true;
     else run_reference = ask_bool("Do you want to run the High-Resolution Reference solver first (to compute L2 errors)?");
@@ -166,6 +182,7 @@ int main()
       std::cout << "\n========== RUN REFERENCE (fixed mesh + fixed dt) ==========\n";
       reference_solver->run();
 
+      // Create a function wrapper around the reference solution for error computation
       reference_function = std::make_unique<dealii::Functions::FEFieldFunction<2>>(
         reference_solver->get_dof_handler(), reference_solver->get_solution());
       reference_function->set_time(T_end);
@@ -177,6 +194,7 @@ int main()
 
     const std::string summary_path = "solutions/summary_comparison.csv";
 
+    // Lambda to run a specific configuration and log results
     auto run_one = [&](const std::string &name, bool use_space, bool use_time, bool use_sd)
     {
       std::string outdir = "solutions/" + name;
@@ -197,6 +215,7 @@ int main()
       append_comparison_csv(summary_path, name, l2_err, solver.get_stats());
     };
 
+    // Execute based on selected mode
     if (run_mode == 0)
     {
        run_one("fixed_space_fixed_time", false, false, false);
