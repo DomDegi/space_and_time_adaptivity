@@ -43,6 +43,8 @@
 #include <limits>
 #include <memory>
 
+// --- Helper Functions for User Input ---
+
 void clear_solutions_folder()
 {
   std::filesystem::create_directories("solutions");
@@ -54,19 +56,19 @@ bool ask_bool(const std::string &question)
 {
   while (true)
   {
-    std::cout << question << " (s/n): ";
+    std::cout << question << " (y/n): ";
     std::string input;
     std::cin >> input;
 
     std::transform(input.begin(), input.end(), input.begin(), ::tolower);
 
-    if (input == "s" || input == "si" || input == "y" || input == "yes" || input == "1")
+    if (input == "y" || input == "yes" || input == "1" || input == "s" || input == "si")
       return true;
 
     if (input == "n" || input == "no" || input == "0")
       return false;
 
-    std::cout << "Input non valido. Riprova.\n";
+    std::cout << "Invalid input. Please answer 'y' (yes) or 'n' (no).\n";
   }
 }
 
@@ -86,7 +88,7 @@ double ask_double_default(const std::string &question, const double default_valu
     if (ss >> v)
       return v;
 
-    std::cout << "Input non valido. Riprova.\n";
+    std::cout << "Invalid input. Please enter a number.\n";
   }
 }
 
@@ -106,7 +108,7 @@ unsigned int ask_uint_default(const std::string &question, const unsigned int de
     if ((ss >> v) && v > 0)
       return static_cast<unsigned int>(v);
 
-    std::cout << "Input non valido. Inserisci un intero positivo.\n";
+    std::cout << "Invalid input. Please enter a positive integer.\n";
   }
 }
 
@@ -201,6 +203,7 @@ namespace Progetto
                  int  cells_per_direction,
                  unsigned int rhs_N_in,
                  double rhs_sigma_in,
+                 double rhs_a_in,
                  double rhs_x0_x_in,
                  double rhs_x0_y_in,
                  double end_time_in,
@@ -280,6 +283,7 @@ namespace Progetto
 
     unsigned int rhs_N = 5;
     double rhs_sigma  = 0.5;
+    double rhs_a      = 2.0;
     Point<dim> rhs_x0;
 
     double end_time = 0.5;
@@ -298,16 +302,20 @@ namespace Progetto
     PreconditionSSOR<SparseMatrix<double>> preconditioner;
   };
 
+  // --- RightHandSide Function ---
+
   template <int dim>
   class RightHandSide : public Function<dim>
   {
   public:
     RightHandSide(const unsigned int N_in,
                   const double sigma_in,
+                  const double a_in,
                   const Point<dim> &x0_in)
       : Function<dim>()
       , N(N_in)
       , sigma(sigma_in)
+      , a(a_in)
       , x0(x0_in)
     {}
 
@@ -317,6 +325,7 @@ namespace Progetto
   private:
     const unsigned int N;
     const double sigma;
+    const double a;
     const Point<dim> x0;
   };
 
@@ -329,7 +338,7 @@ namespace Progetto
     Assert(dim == 2, ExcNotImplemented());
 
     const double time = this->get_time();
-    const double a = 5.0;
+    // const double a = 2.0; // REMOVED (now using member variable 'a')
 
     const double g =
       std::exp(-a * std::cos(2.0 * N * numbers::PI * time)) / std::exp(a);
@@ -345,6 +354,8 @@ namespace Progetto
     return g * h;
   }
 
+  // --- HeatEquation Implementation ---
+
   template <int dim>
   HeatEquation<dim>::HeatEquation(const std::string &run_name_in,
                                  const std::string &output_dir_in,
@@ -355,6 +366,7 @@ namespace Progetto
                                  int  cells_per_direction_in,
                                  unsigned int rhs_N_in,
                                  double rhs_sigma_in,
+                                 double rhs_a_in,
                                  double rhs_x0_x_in,
                                  double rhs_x0_y_in,
                                  double end_time_in,
@@ -379,6 +391,7 @@ namespace Progetto
 
     rhs_N = rhs_N_in;
     rhs_sigma = rhs_sigma_in;
+    rhs_a     = rhs_a_in;
     rhs_x0[0] = rhs_x0_x_in;
     rhs_x0[1] = rhs_x0_y_in;
 
@@ -453,7 +466,7 @@ namespace Progetto
     stats.n_linear_solves++;
     stats.register_cg_iterations(its);
 
-    std::cout << "     " << its << " CG iterations.\n";
+    // std::cout << "     " << its << " CG iterations.\n"; // Optional: comment out to reduce spam
   }
 
   template <int dim>
@@ -470,7 +483,8 @@ namespace Progetto
     laplace_matrix.vmult(tmp, u_old);
     system_rhs.add(-(1.0 - theta) * dt, tmp);
 
-    RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_x0);
+    // Pass 'rhs_a' to the RightHandSide constructor
+    RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_a, rhs_x0);
 
     rhs_function.set_time(t_new);
     VectorTools::create_right_hand_side(dof_handler,
@@ -770,7 +784,7 @@ namespace Progetto
           const double sol_norm   = std::max(1.0, u_two.l2_norm());
           const double tol_scaled = time_step_tolerance * sol_norm + 1e-16;
 
-          const bool hit_min_dt = (dt <= time_step_min * 1.000001); // avoids infinite rejection loop
+          const bool hit_min_dt = (dt <= time_step_min * 1.000001);
 
           if (error <= tol_scaled || hit_min_dt) {
             time = t_one;
@@ -842,7 +856,7 @@ namespace Progetto
           const double t_new = time + dt;
 
           Vector<double> rhs_new(solution.size());
-          RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_x0);
+          RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_a, rhs_x0); // Pass rhs_a
 
           rhs_function.set_time(t_new);
           VectorTools::create_right_hand_side(dof_handler,
@@ -974,26 +988,29 @@ int main()
     clear_solutions_folder();
     using namespace Progetto;
 
-    const bool mesh = ask_bool("Vuoi generare una mesh o importarla da file?");
+    // --- Translated and Updated Prompts ---
+
+    const bool mesh = ask_bool("Do you want to generate a grid inside the program? (answer 'n' to load from file)");
     int cells_per_direction = 0;
 
     if (mesh)
     {
-      std::cout << "Inserisci il numero di celle per direzione (intero positivo): ";
+      std::cout << "Enter the number of cells per direction (positive integer): ";
       std::cin >> cells_per_direction;
       if (cells_per_direction <= 0)
       {
-        std::cerr << "Numero di celle non valido. Deve essere un intero positivo.\n";
+        std::cerr << "Invalid number of cells. It must be a positive integer.\n";
         return 1;
       }
-      std::cout << "Generazione di una mesh con " << cells_per_direction << " celle per direzione.\n";
+      std::cout << "Generating a mesh with " << cells_per_direction << " cells per direction.\n";
     }
 
-    const double T_end       = ask_double_default("Inserisci T (tempo finale)", 0.5);
-    const double sigma       = ask_double_default("Inserisci sigma (delta) della sorgente", 0.5);
-    const double x0_x        = ask_double_default("Inserisci x0_x (centro sorgente)", 0.5);
-    const double x0_y        = ask_double_default("Inserisci x0_y (centro sorgente)", 0.5);
-    const unsigned int N_val = ask_uint_default("Inserisci N (frequenza temporale g(t))", 5);
+    const double T_end       = ask_double_default("Enter T (final time)", 0.5);
+    const double sigma       = ask_double_default("Enter source width sigma", 0.5);
+    const double x0_x        = ask_double_default("Enter source center x0_x", 0.5);
+    const double x0_y        = ask_double_default("Enter source center x0_y", 0.5);
+    const unsigned int N_val = ask_uint_default("Enter N (source frequency term)", 5);
+    const double a_val       = ask_double_default("Enter parameter 'A' (oscillation magnitude)", 5.0); // <--- ASK FOR A
 
     const double dt0 = 1.0 / 500.0;
     const unsigned int base_refine = 2;
@@ -1007,7 +1024,7 @@ int main()
     const unsigned int ref_refine = base_refine + 2;
 
     const bool time_step_doubling =
-      ask_bool("Time adaptivity: vuoi usare step-doubling? (altrimenti euristica economica)");
+      ask_bool("Time adaptivity: use step-doubling? (if 'n', simple heuristic is used)");
 
     std::unique_ptr<HeatEquation<2>> reference_solver;
     std::unique_ptr<dealii::Functions::FEFieldFunction<2>> reference_function;
@@ -1026,7 +1043,7 @@ int main()
         false,
         mesh,
         ref_cells,
-        N_val, sigma, x0_x, x0_y, T_end,
+        N_val, sigma, a_val, x0_x, x0_y, T_end, // Pass a_val
         dt_ref,
         ref_refine,
         0,
@@ -1061,7 +1078,7 @@ int main()
           use_sd,
           mesh,
           cells_per_direction,
-          N_val, sigma, x0_x, x0_y, T_end,
+          N_val, sigma, a_val, x0_x, x0_y, T_end, // Pass a_val
           dt0,
           base_refine,
           pre_steps,
@@ -1085,7 +1102,7 @@ int main()
       run_one("fixed_space_adaptive_time", false, true,  time_step_doubling);
       run_one("adaptive_space_adaptive_time", true,  true,  time_step_doubling);
 
-      std::cout << "\nConfronto completato. CSV: " << summary_path << "\n";
+      std::cout << "\nComparison finished. CSV saved to: " << summary_path << "\n";
       return 0;
     }
 
