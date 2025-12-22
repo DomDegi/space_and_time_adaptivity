@@ -48,6 +48,8 @@
 void clear_solutions_folder()
 {
   std::filesystem::create_directories("solutions");
+  // Only clear if we are doing a full run or want a fresh start.
+  // For safety in this logic, we clear to avoid mixing old vtk files.
   for (const auto &entry : std::filesystem::directory_iterator("solutions"))
     std::filesystem::remove_all(entry.path());
 }
@@ -105,10 +107,10 @@ unsigned int ask_uint_default(const std::string &question, const unsigned int de
 
     std::stringstream ss(line);
     int v;
-    if ((ss >> v) && v > 0)
+    if ((ss >> v) && v >= 0) // Allow 0
       return static_cast<unsigned int>(v);
 
-    std::cout << "Invalid input. Please enter a positive integer.\n";
+    std::cout << "Invalid input. Please enter a positive integer (or 0).\n";
   }
 }
 
@@ -1061,25 +1063,51 @@ int main()
         std::cout << "Using default solver settings (Theta=0.5, Tol=1e-6, dt_min=1e-4).\n";
     }
 
+    // --- Time Step Doubling Preference ---
+    // Ask it here because it is used in mode 3 and 4
+    const bool time_step_doubling =
+      ask_bool("Time adaptivity: use step-doubling? (answer 'n' to use simple heuristic)");
+
+    // --- Simulation Mode Selection ---
+    std::cout << "\n============================================\n"
+              << "          SELECT SIMULATION MODE            \n"
+              << "============================================\n"
+              << "0 - Full Comparison (Run Reference + all 4 configurations) [Default]\n"
+              << "1 - Fixed Space + Fixed Time\n"
+              << "2 - Adaptive Space + Fixed Time\n"
+              << "3 - Fixed Space + Adaptive Time\n"
+              << "4 - Adaptive Space + Adaptive Time\n"
+              << "--------------------------------------------\n";
+
+    unsigned int run_mode = ask_uint_default("Enter selection", 0);
+    if (run_mode > 4) run_mode = 0; // fallback to default if invalid
+
     // --- Fixed internal params ---
     const double dt0 = 1.0 / 500.0;
     const unsigned int base_refine = 2;
     const unsigned int pre_steps   = 4;
     const unsigned int refine_every = 5;
-
-    const bool do_comparison = true;
     const bool write_vtk = true;
 
     const double dt_ref = dt0 / 10.0;
     const unsigned int ref_refine = base_refine + 2;
 
-    const bool time_step_doubling =
-      ask_bool("Time adaptivity: use step-doubling? (if 'n', simple heuristic is used)");
-
     std::unique_ptr<HeatEquation<2>> reference_solver;
     std::unique_ptr<dealii::Functions::FEFieldFunction<2>> reference_function;
 
-    if (do_comparison)
+    // Choose wether to run the reference solver
+    bool run_reference = false;
+    if (run_mode == 0)
+    {
+      run_reference = true;
+    }
+    else
+    {
+      // Se si sceglie una run singola, chiedi se si vuole la referenza per l'errore
+      run_reference = ask_bool("Do you want to run the High-Resolution Reference solver first (to compute L2 errors)?");
+    }
+
+    if (run_reference)
     {
       int ref_cells = cells_per_direction;
       if (mesh)
@@ -1095,7 +1123,7 @@ int main()
         mesh,
         ref_cells,
         N_val, sigma, a_val, x0_x, x0_y,
-        user_diffusion, user_mass, user_theta, user_tol, user_dt_min, // <--- New Params
+        user_diffusion, user_mass, user_theta, user_tol, user_dt_min,
         T_end,
         dt_ref,
         ref_refine,
@@ -1111,55 +1139,77 @@ int main()
         reference_solver->get_solution());
       reference_function->set_time(T_end);
     }
-
-    if (do_comparison)
+    else
     {
-      const std::string summary_path = "solutions/summary_comparison.csv";
+      std::cout << "\nSkipping reference solver. L2 errors will be NaN.\n";
+    }
 
-      auto run_one = [&](const std::string &name,
-                         const bool use_space,
-                         const bool use_time,
-                         const bool use_sd)
-      {
-        std::string outdir = "solutions/" + name;
+    // --- Execution Block ---
+    const std::string summary_path = "solutions/summary_comparison.csv";
 
-        // Pass user custom params to solvers
-        HeatEquation<2> solver(
-          name,
-          outdir,
-          use_space,
-          use_time,
-          use_sd,
-          mesh,
-          cells_per_direction,
-          N_val, sigma, a_val, x0_x, x0_y,
-          user_diffusion, user_mass, user_theta, user_tol, user_dt_min,
-          T_end,
-          dt0,
-          base_refine,
-          pre_steps,
-          refine_every,
-          write_vtk);
+    // Lambda to run one of the configurations
+    auto run_one = [&](const std::string &name,
+                        const bool use_space,
+                        const bool use_time,
+                        const bool use_sd)
+    {
+      std::string outdir = "solutions/" + name;
 
-        std::cout << "\n========== RUN " << name << " ==========\n";
-        solver.run();
+      // Pass user custom params to solvers
+      HeatEquation<2> solver(
+        name,
+        outdir,
+        use_space,
+        use_time,
+        use_sd,
+        mesh,
+        cells_per_direction,
+        N_val, sigma, a_val, x0_x, x0_y,
+        user_diffusion, user_mass, user_theta, user_tol, user_dt_min,
+        T_end,
+        dt0,
+        base_refine,
+        pre_steps,
+        refine_every,
+        write_vtk);
 
-        double l2_err = std::numeric_limits<double>::quiet_NaN();
-        if (reference_function)
-          l2_err = solver.compute_L2_error_against(*reference_function);
+      std::cout << "\n========== RUN " << name << " ==========\n";
+      solver.run();
 
-        std::cout << "[" << name << "] L2 error at T = " << l2_err << "\n";
+      double l2_err = std::numeric_limits<double>::quiet_NaN();
+      if (reference_function)
+        l2_err = solver.compute_L2_error_against(*reference_function);
 
-        append_comparison_csv(summary_path, name, l2_err, solver.get_stats());
-      };
+      std::cout << "[" << name << "] L2 error at T = " << l2_err << "\n";
 
-      run_one("fixed_space_fixed_time", false, false, false);
-      run_one("adaptive_space_fixed_time", true,  false, false);
-      run_one("fixed_space_adaptive_time", false, true,  time_step_doubling);
-      run_one("adaptive_space_adaptive_time", true,  true,  time_step_doubling);
+      append_comparison_csv(summary_path, name, l2_err, solver.get_stats());
+    };
 
-      std::cout << "\nComparison finished. CSV saved to: " << summary_path << "\n";
-      return 0;
+    // switch logic based on user input
+    if (run_mode == 0)
+    {
+       // Full Comparison
+       run_one("fixed_space_fixed_time", false, false, false);
+       run_one("adaptive_space_fixed_time", true,  false, false);
+       run_one("fixed_space_adaptive_time", false, true,  time_step_doubling);
+       run_one("adaptive_space_adaptive_time", true,  true,  time_step_doubling);
+       std::cout << "\nComparison finished. CSV saved to: " << summary_path << "\n";
+    }
+    else if (run_mode == 1)
+    {
+       run_one("fixed_space_fixed_time", false, false, false);
+    }
+    else if (run_mode == 2)
+    {
+       run_one("adaptive_space_fixed_time", true,  false, false);
+    }
+    else if (run_mode == 3)
+    {
+       run_one("fixed_space_adaptive_time", false, true,  time_step_doubling);
+    }
+    else if (run_mode == 4)
+    {
+       run_one("adaptive_space_adaptive_time", true,  true,  time_step_doubling);
     }
 
     return 0;
