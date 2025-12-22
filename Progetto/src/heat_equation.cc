@@ -102,8 +102,10 @@ namespace Progetto
                                   double rhs_a_in,
                                   double rhs_x0_x_in,
                                   double rhs_x0_y_in,
-                                  double material_diffusion_in,
-                                  double material_mass_in,
+                                  double density_in,
+                                  double specific_heat_in,
+                                  double thermal_conductivity_in,
+                                  double source_intensity_in,
                                   double theta_in,
                                   double time_step_tolerance_in,
                                   double time_step_min_in,
@@ -113,7 +115,7 @@ namespace Progetto
                                   unsigned int n_adaptive_pre_refinement_steps_in,
                                   unsigned int refine_every_n_steps_in,
                                   bool write_vtk_in)
-    : fe(1) // Q1 elements (linear)
+    : fe(1)
     , dof_handler(triangulation)
     , theta(theta_in)
   {
@@ -127,24 +129,24 @@ namespace Progetto
     use_mesh = mesh;
     cells_per_direction = cells_per_direction_in;
 
-    // RHS parameters
     rhs_N = rhs_N_in;
     rhs_sigma = rhs_sigma_in;
     rhs_a     = rhs_a_in;
     rhs_x0[0] = rhs_x0_x_in;
     rhs_x0[1] = rhs_x0_y_in;
 
-    // Physical coefficients
-    material_diffusion = material_diffusion_in;
-    material_mass      = material_mass_in;
+    // --- Physical Parameters Initialization ---
+    density = density_in;
+    specific_heat = specific_heat_in;
+    thermal_conductivity = thermal_conductivity_in;
+    source_intensity = source_intensity_in;
 
-    // Time parameters
     time_step_tolerance = time_step_tolerance_in;
     time_step_min       = time_step_min_in;
-    end_time            = end_time_in;
-    time_step           = initial_dt_in;
 
-    // Mesh refinement parameters
+    end_time = end_time_in;
+    time_step = initial_dt_in;
+
     initial_global_refinement = initial_global_refinement_in;
     n_adaptive_pre_refinement_steps = n_adaptive_pre_refinement_steps_in;
     refine_every_n_steps = refine_every_n_steps_in;
@@ -162,30 +164,28 @@ namespace Progetto
               << "[" << run_name << "] Number of degrees of freedom: " << dof_handler.n_dofs() << "\n"
               << "===========================================\n";
 
-    // Handle hanging nodes constraints (essential for adaptive meshes)
     constraints.clear();
     DoFTools::make_hanging_node_constraints(dof_handler, constraints);
     constraints.close();
 
-    // Create sparsity pattern
     DynamicSparsityPattern dsp(dof_handler.n_dofs());
     DoFTools::make_sparsity_pattern(dof_handler, dsp, constraints, true);
     sparsity_pattern.copy_from(dsp);
 
-    // Reinitialize matrices
     mass_matrix.reinit(sparsity_pattern);
     laplace_matrix.reinit(sparsity_pattern);
     system_matrix.reinit(sparsity_pattern);
 
-    // Assemble Mass Matrix (multiplied by material_mass coefficient)
+    // Assemble Mass Matrix: M_ij = integral( phi_i * phi_j )
     MatrixCreator::create_mass_matrix(dof_handler, QGauss<dim>(fe.degree + 1), mass_matrix);
-    mass_matrix *= material_mass;
+    // Multiply by Density * Specific Heat (rho * c_p)
+    mass_matrix *= (density * specific_heat);
 
-    // Assemble Laplace/Stiffness Matrix (multiplied by diffusion coefficient)
+    // Assemble Laplace Matrix: A_ij = integral( grad(phi_i) * grad(phi_j) )
     MatrixCreator::create_laplace_matrix(dof_handler, QGauss<dim>(fe.degree + 1), laplace_matrix);
-    laplace_matrix *= material_diffusion;
+    // Multiply by Thermal Conductivity (k)
+    laplace_matrix *= thermal_conductivity;
 
-    // Reinitialize vectors
     solution.reinit(dof_handler.n_dofs());
     old_solution.reinit(dof_handler.n_dofs());
     system_rhs.reinit(dof_handler.n_dofs());
@@ -195,7 +195,6 @@ namespace Progetto
   void HeatEquation<dim>::solve_time_step()
   {
     const double rhs_norm = system_rhs.l2_norm();
-    // Adaptive tolerance for the linear solver
     const double tol = std::max(1e-14, 1e-8 * rhs_norm);
 
     SolverControl            solver_control(1000, tol);
@@ -204,7 +203,6 @@ namespace Progetto
     preconditioner.initialize(system_matrix, 1.0);
     cg.solve(system_matrix, solution, system_rhs, preconditioner);
 
-    // Distribute constraints (hanging nodes) back to the solution vector
     constraints.distribute(solution);
 
     const unsigned int its = solver_control.last_step();
@@ -218,41 +216,33 @@ namespace Progetto
                                        const double          t_new,
                                        Vector<double> &      u_out)
   {
-    // Theta-scheme discretization:
-    // (M + theta*dt*A) * U_new = (M - (1-theta)*dt*A) * U_old + dt*(theta*F_new + (1-theta)*F_old)
-
     Vector<double> tmp(u_old.size());
     Vector<double> forcing_terms_local(u_old.size());
 
-    // 1. Term: M * U_old
     mass_matrix.vmult(system_rhs, u_old);
 
-    // 2. Term: - (1 - theta) * dt * A * U_old
     laplace_matrix.vmult(tmp, u_old);
     system_rhs.add(-(1.0 - theta) * dt, tmp);
 
-    // 3. Forcing terms (Right Hand Side)
-    RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_a, rhs_x0);
+    // Instantiate RightHandSide with the scaling factor Q (source_intensity)
+    RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_a, rhs_x0, source_intensity);
 
-    // F_new at t_new
     rhs_function.set_time(t_new);
     VectorTools::create_right_hand_side(dof_handler, QGauss<dim>(fe.degree + 1), rhs_function, tmp);
     forcing_terms_local = tmp;
     forcing_terms_local *= dt * theta;
 
-    // F_old at t_old
     rhs_function.set_time(t_new - dt);
     VectorTools::create_right_hand_side(dof_handler, QGauss<dim>(fe.degree + 1), rhs_function, tmp);
     forcing_terms_local.add(dt * (1.0 - theta), tmp);
 
     system_rhs += forcing_terms_local;
 
-    // 4. Assemble System Matrix (LHS): M + theta * dt * A
     system_matrix.copy_from(mass_matrix);
     system_matrix.add(theta * dt, laplace_matrix);
 
-    // Apply boundary constraints and solve
     constraints.condense(system_matrix, system_rhs);
+
     solve_time_step();
 
     u_out = solution;
@@ -313,18 +303,16 @@ namespace Progetto
   void HeatEquation<dim>::refine_mesh(const unsigned int min_grid_level,
                                       const unsigned int max_grid_level)
   {
-    // 1. Error Estimation (Kelly Error Estimator on the gradient jump)
     Vector<float> estimated_error_per_cell(triangulation.n_active_cells());
+
     KellyErrorEstimator<dim>::estimate(dof_handler,
                                        QGauss<dim - 1>(fe.degree + 1),
                                        std::map<types::boundary_id, const Function<dim> *>(),
                                        solution,
                                        estimated_error_per_cell);
 
-    // 2. Mark cells for refinement/coarsening
     GridRefinement::refine_and_coarsen_fixed_fraction(triangulation, estimated_error_per_cell, 0.6, 0.4);
 
-    // 3. Enforce min/max level constraints
     if (triangulation.n_levels() > 0)
     {
       for (const auto &cell : triangulation.active_cell_iterators())
@@ -336,7 +324,6 @@ namespace Progetto
           cell->clear_coarsen_flag();
     }
 
-    // Count marked cells for logging
     unsigned int marked_refine = 0;
     unsigned int marked_coarsen = 0;
     for (const auto &cell : triangulation.active_cell_iterators())
@@ -355,7 +342,6 @@ namespace Progetto
 
     log_mesh_event(marked_refine, marked_coarsen);
 
-    // 4. Solution Transfer (Save old solution, refine grid, interpolate back)
     SolutionTransfer<dim> solution_trans(dof_handler);
     Vector<double> previous_solution = solution;
 
@@ -363,7 +349,7 @@ namespace Progetto
     solution_trans.prepare_for_coarsening_and_refinement(previous_solution);
     triangulation.execute_coarsening_and_refinement();
 
-    setup_system(); // Rebuild matrices on the new mesh
+    setup_system();
 
     solution_trans.interpolate(previous_solution, solution);
     constraints.distribute(solution);
@@ -392,7 +378,6 @@ namespace Progetto
     std::filesystem::create_directories(output_dir);
     const auto t_start = std::chrono::steady_clock::now();
 
-    // --- Mesh Initialization ---
     if (use_mesh)
     {
       GridGenerator::subdivided_hyper_cube(triangulation, cells_per_direction);
@@ -401,7 +386,6 @@ namespace Progetto
     }
     else
     {
-      // Load from external MSH file
       const std::string mesh_file_name = "../mesh/mesh-input.msh";
       GridIn<dim> grid_in;
       grid_in.attach_triangulation(triangulation);
@@ -412,28 +396,20 @@ namespace Progetto
       setup_system();
     }
 
-    // --- Initial Condition ---
     VectorTools::interpolate(dof_handler, Functions::ZeroFunction<dim>(), old_solution);
     solution = old_solution;
     stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
 
-    // --- Adaptive Pre-refinement ---
-    // Refine the mesh at t=0 based on the initial forcing term behavior
     if (use_space_adaptivity && n_adaptive_pre_refinement_steps > 0)
     {
       for (unsigned int pre = 0; pre < n_adaptive_pre_refinement_steps; ++pre)
       {
         std::cout << "\n[" << run_name << "][Pre-refinement] step " << (pre + 1)
                   << " / " << n_adaptive_pre_refinement_steps << "\n";
-
-        // Take a dummy small step to estimate error
         const double dt_probe = time_step;
         Vector<double> u_probe(solution.size());
         do_time_step(old_solution, dt_probe, dt_probe, u_probe);
-
         refine_mesh(initial_global_refinement, initial_global_refinement + n_adaptive_pre_refinement_steps);
-
-        // Reset solution to zero after refinement
         VectorTools::interpolate(dof_handler, Functions::ZeroFunction<dim>(), old_solution);
         solution = old_solution;
         stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
@@ -446,9 +422,6 @@ namespace Progetto
 
     const double eps = 1e-12;
 
-    // ========================================================================
-    // Case 1: Fixed Time Stepping
-    // ========================================================================
     if (!use_time_adaptivity)
     {
       while (time < end_time - eps)
@@ -472,7 +445,6 @@ namespace Progetto
 
         if (write_vtk) output_results();
 
-        // Check for periodic space refinement
         if ((timestep_number % refine_every_n_steps == 0) && use_space_adaptivity)
         {
           refine_mesh(initial_global_refinement, initial_global_refinement + n_adaptive_pre_refinement_steps);
@@ -480,47 +452,37 @@ namespace Progetto
         }
       }
     }
-    // ========================================================================
-    // Case 2: Adaptive Time Stepping
-    // ========================================================================
     else
     {
-      const unsigned int p = 2; // Order of convergence assumed
+      const unsigned int p = 2;
       while (time < end_time - eps)
       {
         double dt = std::min(time_step, end_time - time);
 
         if (use_step_doubling)
         {
-          // --- Step Doubling Strategy ---
-          // 1. Take one full step (dt)
           Vector<double> u_one(solution.size());
           Vector<double> u_two(solution.size());
           const double t_one = time + dt;
-          do_time_step(old_solution, dt, t_one, u_one);
 
-          // 2. Take two half steps (dt/2)
+          do_time_step(old_solution, dt, t_one, u_one);
           const double dt2 = 0.5 * dt;
           Vector<double> u_half(solution.size());
           do_time_step(old_solution, dt2, time + dt2, u_half);
           do_time_step(u_half, dt2, t_one, u_two);
 
-          // 3. Compute Error: ||u_full - u_two_half||
           Vector<double> diff(u_two);
           diff -= u_one;
           const double error = diff.l2_norm();
           const double sol_norm = std::max(1.0, u_two.l2_norm());
           const double tol_scaled = time_step_tolerance * sol_norm + 1e-16;
-
-          // Force acceptance if dt is already at minimum
           const bool hit_min_dt = (dt <= time_step_min * 1.000001);
 
           if (error <= tol_scaled || hit_min_dt)
           {
-            // ACCEPT STEP
             time = t_one;
             ++timestep_number;
-            solution = u_two; // Use the more accurate solution
+            solution = u_two;
             old_solution = solution;
 
             if (hit_min_dt && error > tol_scaled)
@@ -538,15 +500,13 @@ namespace Progetto
             stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
             if (write_vtk) output_results();
 
-            // Periodic Space Refinement
             if ((timestep_number % refine_every_n_steps == 0) && use_space_adaptivity)
             {
               refine_mesh(initial_global_refinement, initial_global_refinement + n_adaptive_pre_refinement_steps);
               stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
             }
 
-            // Calculate next dt
-            const double err_ratio = (error > 0.0) ? (time_step_tolerance * sol_norm / error) : 1e6;
+            double err_ratio = (error > 0.0) ? (time_step_tolerance * sol_norm / error) : 1e6;
             double dt_new = dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
             dt_new = std::min(std::max(dt_new, time_step_min), time_step_max);
             time_step = dt_new;
@@ -554,8 +514,7 @@ namespace Progetto
           }
           else
           {
-            // REJECT STEP
-            const double err_ratio = (error > 0.0) ? (time_step_tolerance * sol_norm / error) : 1e6;
+            double err_ratio = (error > 0.0) ? (time_step_tolerance * sol_norm / error) : 1e6;
             double dt_new = dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
             dt_new = std::max(dt_new, time_step_min);
             time_step = dt_new;
@@ -566,11 +525,11 @@ namespace Progetto
         }
         else
         {
-          // --- Heuristic Strategy ---
-          // Estimates error based on the change in the RHS (forcing term)
+          // Heuristic adaptivity logic
           const double t_new = time + dt;
           Vector<double> rhs_new(solution.size());
-          RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_a, rhs_x0);
+          // Updated: Pass source_intensity (Q)
+          RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_a, rhs_x0, source_intensity);
           rhs_function.set_time(t_new);
           VectorTools::create_right_hand_side(dof_handler, QGauss<dim>(fe.degree + 1), rhs_function, rhs_new);
 
@@ -604,7 +563,6 @@ namespace Progetto
             stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
           }
 
-          // Heuristic adjustment
           double factor = 1.0;
           if (error_est > 2.0 * tol) factor = 0.5;
           else if (error_est < 0.25 * tol) factor = 2.0;
@@ -622,6 +580,6 @@ namespace Progetto
     std::cout << "[" << run_name << "] DONE. CPU seconds = " << stats.cpu_seconds_total << "\n";
   }
 
-  // Explicit Instantiation for 2D to ensure linker finds symbols
+  // Explicit Instantiation for 2D
   template class HeatEquation<2>;
 }

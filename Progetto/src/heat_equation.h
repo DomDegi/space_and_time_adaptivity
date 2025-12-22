@@ -33,14 +33,7 @@ namespace Progetto
    * @class HeatEquation
    * @brief Main class for solving the time-dependent Heat Equation.
    *
-   * This class manages the Finite Element Method (FEM) simulation, including:
-   * - Grid generation or loading.
-   * - System assembly (Mass and Stiffness matrices).
-   * - Time stepping (Theta-scheme: Euler or Crank-Nicolson).
-   * - Adaptivity (Mesh refinement and Time step sizing).
-   * - Output generation (VTK files and CSV logs).
-   *
-   * @tparam dim Spatial dimension (e.g., 2).
+   * Solves: rho * cp * du/dt - div(k * grad(u)) = Q
    */
   template <int dim>
   class HeatEquation
@@ -49,19 +42,16 @@ namespace Progetto
     /**
      * @struct RunStats
      * @brief Container for collecting performance and simulation statistics.
-     * * Used to compare different configurations (Fixed vs Adaptive).
      */
     struct RunStats
     {
       double cpu_seconds_total = 0.0;     ///< Total execution time
 
-      // Solver statistics
       unsigned int n_linear_solves = 0;
       unsigned long long cg_iterations_sum = 0;
       unsigned int cg_iterations_min = std::numeric_limits<unsigned int>::max();
       unsigned int cg_iterations_max = 0;
 
-      // Time stepping statistics
       unsigned int n_time_steps_total = 0;
       unsigned int n_time_steps_accepted = 0;
       unsigned int n_time_steps_rejected = 0;
@@ -70,7 +60,6 @@ namespace Progetto
       double dt_max = 0.0;
       double dt_sum = 0.0;
 
-      // Mesh statistics
       unsigned long long dof_sum = 0;
       unsigned int dof_min = std::numeric_limits<unsigned int>::max();
       unsigned int dof_max = 0;
@@ -78,20 +67,16 @@ namespace Progetto
       unsigned int cells_min = std::numeric_limits<unsigned int>::max();
       unsigned int cells_max = 0;
 
-      // Methods to update stats
       void reset();
       void sample_dofs_and_cells(const unsigned int ndofs, const unsigned int ncells);
       void register_cg_iterations(const unsigned int it);
       void register_time_step_attempt(const double dt, const bool accepted);
-
-      // Getters for averages
       double dt_mean() const;
       double dof_mean() const;
     };
 
     /**
-     * @brief Constructor initializing all simulation parameters.
-     * * See the implementation file for detailed parameter descriptions.
+     * @brief Constructor initializing all simulation parameters including physical properties.
      */
     HeatEquation(const std::string &run_name_in,
                  const std::string &output_dir_in,
@@ -105,8 +90,12 @@ namespace Progetto
                  double rhs_a_in,
                  double rhs_x0_x_in,
                  double rhs_x0_y_in,
-                 double material_diffusion_in,
-                 double material_mass_in,
+                 // --- Physical Parameters ---
+                 double density_in,              ///< rho
+                 double specific_heat_in,        ///< c_p
+                 double thermal_conductivity_in, ///< k
+                 double source_intensity_in,     ///< Q
+                 // ---------------------------
                  double theta_in,
                  double time_step_tolerance_in,
                  double time_step_min_in,
@@ -119,58 +108,29 @@ namespace Progetto
 
     /**
      * @brief Main driver function.
-     * * Executes the simulation loop: setup -> time loop -> solve -> output.
      */
     void run();
 
-    // --- Getters for analysis ---
     const DoFHandler<dim> &get_dof_handler() const { return dof_handler; }
     const Vector<double>  &get_solution()   const { return solution; }
     const RunStats        &get_stats()      const { return stats; }
 
-    /**
-     * @brief Computes L2 error against a provided analytical or reference function.
-     */
     double compute_L2_error_against(const Function<dim> &reference_function) const;
 
   private:
-    /**
-     * @brief Sets up the DoFHandler, matrices, and vectors.
-     * Resizes system matrix, mass matrix, and laplace matrix.
-     */
     void setup_system();
-
-    /**
-     * @brief Solves the linear system M*x = RHS using CG solver.
-     */
     void solve_time_step();
 
-    /**
-     * @brief Performs a single time step integration.
-     * * Assembles the RHS based on the theta-scheme and solves for u_out.
-     * * @param u_old Solution at previous time step.
-     * @param dt    Time step size.
-     * @param t_new Target time.
-     * @param u_out Output vector to store the new solution.
-     */
     void do_time_step(const Vector<double> &u_old,
                       const double          dt,
                       const double          t_new,
                       Vector<double> &      u_out);
 
-    /**
-     * @brief Outputs the current solution to a VTK file.
-     */
     void output_results() const;
 
-    /**
-     * @brief Refines the mesh based on Kelly error estimator.
-     * * Uses solution transfer to map the old solution to the new mesh.
-     */
     void refine_mesh(const unsigned int min_grid_level,
                      const unsigned int max_grid_level);
 
-    // --- Logging Helpers ---
     void log_mesh_event(const unsigned int marked_refine,
                         const unsigned int marked_coarsen) const;
 
@@ -186,17 +146,15 @@ namespace Progetto
     DoFHandler<dim>    dof_handler;
     AffineConstraints<double> constraints;
 
-    // Linear Algebra
     SparsityPattern      sparsity_pattern;
-    SparseMatrix<double> mass_matrix;     ///< Mass matrix (M)
-    SparseMatrix<double> laplace_matrix;  ///< Stiffness/Laplace matrix (A)
-    SparseMatrix<double> system_matrix;   ///< Matrix to solve: M + theta*dt*A
+    SparseMatrix<double> mass_matrix;
+    SparseMatrix<double> laplace_matrix;
+    SparseMatrix<double> system_matrix;
 
     Vector<double> solution;
     Vector<double> old_solution;
     Vector<double> system_rhs;
 
-    // --- Simulation State ---
     double       time = 0.0;
     double       time_step;
     unsigned int timestep_number = 0;
@@ -206,18 +164,19 @@ namespace Progetto
     bool use_time_adaptivity;
     bool use_step_doubling;
 
-    // --- Time Stepping Parameters ---
     double time_step_tolerance;
     double time_step_min;
     double time_step_max = 1e-1;
     double time_step_safety = 0.9;
-    const double theta; ///< 0=Explicit, 0.5=Crank-Nicolson, 1.0=Implicit
+    const double theta;
 
-    // --- Material Parameters ---
-    double material_diffusion; ///< Diffusion coefficient (k)
-    double material_mass;      ///< Reaction/Mass coefficient (c)
+    // --- Physical Parameters ---
+    double density;              ///< rho [kg/m^3]
+    double specific_heat;        ///< c_p [J/(kg K)]
+    double thermal_conductivity; ///< k [W/(m K)]
+    double source_intensity;     ///< Q [W/m^3]
 
-    // --- Mesh & RHS Parameters ---
+    // --- Mesh & RHS parameters ---
     bool use_mesh;
     int  cells_per_direction;
     unsigned int rhs_N;

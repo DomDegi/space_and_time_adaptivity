@@ -17,9 +17,10 @@ using namespace dealii;
  * @class RightHandSide
  * @brief A time-dependent spatial function used as the forcing term.
  *
- * Implements a Gaussian source that pulsates in time.
- * Mathematical form: f(x, t) = g(t) * h(x)
+ * Implements a Gaussian source that pulsates in time, scaled by an intensity factor Q.
+ * Mathematical form: f(x, t) = Q * g(t) * h(x)
  * * where:
+ * - Q    = Source intensity (Volumetric power density [W/m^3])
  * - h(x) = exp(-|x-x0|^2 / sigma^2)  (Spatial Gaussian)
  * - g(t) = exp(-a * cos(2*pi*N*t)) / exp(a) (Temporal oscillation)
  * * @tparam dim The spatial dimension (e.g., 2 or 3).
@@ -34,23 +35,26 @@ public:
    * @param sigma_in Width (standard deviation related) of the spatial Gaussian.
    * @param a_in Parameter controlling the magnitude/sharpness of time oscillation.
    * @param x0_in The spatial center of the Gaussian source.
+   * @param Q_in The source intensity factor (default should be 1.0).
    */
   RightHandSide(const unsigned int N_in,
                 const double sigma_in,
                 const double a_in,
-                const Point<dim> &x0_in)
+                const Point<dim> &x0_in,
+                const double Q_in)
     : Function<dim>()
     , N(N_in)
     , sigma(sigma_in)
     , a(a_in)
     , x0(x0_in)
+    , Q(Q_in)
   {}
 
   /**
    * @brief Evaluates the function at a given point and current time.
    * * @param p The point in space.
    * @param component The vector component (always 0 for scalar heat equation).
-   * @return The computed value of the source term.
+   * @return The computed value of the source term: Q * g(t) * h(x).
    */
   virtual double value(const Point<dim> &p,
                        const unsigned int component = 0) const override;
@@ -60,6 +64,7 @@ private:
   const double sigma;     ///< Spatial width
   const double a;         ///< Amplitude/decay parameter
   const Point<dim> x0;    ///< Center of the source
+  const double Q;         ///< Source Intensity (Scaling factor)
 };
 
 // --- Implementation ---
@@ -70,7 +75,6 @@ double RightHandSide<dim>::value(const Point<dim> &p,
 {
   (void)component;
   AssertIndexRange(component, 1);
-  // Note: While primarily designed for 2D, this math works generically for dim=1,2,3.
 
   const double time = this->get_time();
 
@@ -87,7 +91,8 @@ double RightHandSide<dim>::value(const Point<dim> &p,
 
   const double h = std::exp(-r2 / (sigma * sigma));
 
-  return g * h;
+  // Combine parts with the intensity factor Q
+  return Q * g * h;
 }
 
 #endif // RIGHT_HAND_SIDE_H
