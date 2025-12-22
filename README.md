@@ -87,12 +87,20 @@ Set the parameters for the heat source and domain (corresponding to the equation
 * **Frequency ($N$):** The oscillation frequency of the source term (default: `5`).
 * **Magnitude ($A$):** The amplitude of the source oscillation (default: `5.0`).
 
-### 3. Material Properties (Optional)
+### 3. Material Properties (Coefficients)
 The program asks: *"Do you want to customize physical material coefficients?"*
-* **No:** Uses default values ($\mu=1.0$).
-* **Yes:** You can specify:
-    * **Diffusion Coefficient ($k/\mu$):** Controls thermal conductivity.
-    * **Reaction/Mass Coefficient ($c$):** Controls the heat capacity/density term.
+* **No:** Uses default unitary values ($\mu=1$, equivalent to $\rho=1, c_p=1, k=1$).
+* **Yes:** You can specify the actual physical properties. This generalizes the equation to the full heat transfer form:
+
+$$
+\rho c_p \frac{\partial u}{\partial t} - \nabla \cdot (k \nabla u) = Q \cdot g(t)h(\mathbf{x})
+$$
+
+Where the user-defined parameters are:
+* **Density ($\rho$):** Mass density of the material [$kg/m^3$].
+* **Specific Heat ($c_p$):** Heat capacity [$J/(kg \cdot K)$].
+* **Thermal Conductivity ($k$):** Rate of heat transfer [$W/(m \cdot K)$].
+* **Source Intensity ($Q$):** Maximum volumetric power density [$W/m^3$].
 
 ### 4. Solver & Time Stepping (Optional)
 The program asks: *"Do you want to customize solver & time adaptivity settings?"*
