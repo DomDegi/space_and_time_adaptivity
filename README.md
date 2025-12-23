@@ -97,14 +97,14 @@ $$
 $$
 
 Where the user-defined parameters are:
-* **Density ($\rho$):** Mass density of the material [$kg/m^3$].
-* **Specific Heat ($c_p$):** Heat capacity [$J/(kg \cdot K)$].
-* **Thermal Conductivity ($k$):** Rate of heat transfer [$W/(m \cdot K)$].
-* **Source Intensity ($Q$):** Maximum volumetric power density [$W/m^3$].
+* **Density ($\rho$):** Mass density of the material [kg/m³].
+* **Specific Heat ($c_p$):** Heat capacity [J/(kg·K)].
+* **Thermal Conductivity ($k$):** Rate of heat transfer [W/(m·K)].
+* **Source Intensity ($Q$):** Maximum volumetric power density [W/m³].
 
 ### 4. Solver & Time Stepping (Optional)
 The program asks: *"Do you want to customize solver & time adaptivity settings?"*
-* **No:** Uses defaults ($\theta=0.5$ Crank-Nicolson, Tol=$10^{-6}$).
+* **No:** Uses defaults ($\theta=0.5$ Crank-Nicolson, Tol=10^{-6}).
 * **Yes:** You can specify:
     * **Theta ($\theta$):** Time integration scheme.
         * `0.0`: Forward Euler (Explicit).
