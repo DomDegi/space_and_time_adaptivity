@@ -64,7 +64,7 @@ Before compiling, ensure you are inside the container and have loaded the necess
 
 5.  **Run the program:**
     ```bash
-    ./heat_equation
+    ./heat-equation
     ```
     *(Note: The `solutions` directory will be created automatically by the program).*
 
@@ -72,7 +72,7 @@ Before compiling, ensure you are inside the container and have loaded the necess
 
 ## Usage & Configuration
 
-Upon running `./heat_equation`, the application will launch an interactive command-line interface (CLI). You will be prompted to configure the simulation in the following order:
+Upon running `./heat-equation`, the application will launch an interactive command-line interface (CLI). You will be prompted to configure the simulation in the following order:
 
 ### 1. Mesh Generation
 * **Generate internal grid?**
