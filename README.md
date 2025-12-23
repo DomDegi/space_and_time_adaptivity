@@ -1,28 +1,3 @@
-<<<<<<< HEAD
-### Organizing the source code
-Please place all your sources into the `src` folder.
-
-Binary files must not be uploaded to the repository (including executables).
-
-Mesh files should not be uploaded to the repository. If applicable, upload `gmsh` scripts with suitable instructions to generate the meshes (and ideally a Makefile that runs those instructions). If not applicable, consider uploading the meshes to a different file sharing service, and providing a download link as part of the building and running instructions.
-
-### Compiling
-To build the executable, make sure you have loaded the needed modules with
-```bash
-$ module load gcc-glibc dealii
-```
-Then run the following commands:
-```bash
-$ mkdir build
-$ cd build
-$ cmake ..
-$ make
-```
-The executable will be created into `build`, and can be executed through
-```bash
-$ ./executable-name
-```
-=======
 # Project 5: Space and Time Adaptivity
 
 This project implements an adaptive space–time finite element solver for the heat equation with localized impulsive forcing. The solver utilizes **deal.II** to handle **adaptive mesh refinement (AMR)** in space and **adaptive time-stepping** to efficiently resolve dynamic physical phenomena.
@@ -67,8 +42,8 @@ Before compiling, ensure you are inside the container and have loaded the necess
 
 1.  **Clone the repository** (if you haven't already):
     ```bash
-    git clone [https://github.com/GeckyMerlo/PDE_space-time.git](https://github.com/GeckyMerlo/PDE_space-time.git)
-    cd PDE_space-time/Progetto
+    git clone [https://github.com/DomDegi/space_and_time_adaptivity.git](https://github.com/DomDegi/space_and_time_adaptivity)
+    cd space_and_time_adaptivity/
     ```
 
 2.  **Create a build directory:**
@@ -89,7 +64,7 @@ Before compiling, ensure you are inside the container and have loaded the necess
 
 5.  **Run the program:**
     ```bash
-    ./progetto
+    ./heat_equation
     ```
     *(Note: The `solutions` directory will be created automatically by the program).*
 
@@ -97,7 +72,7 @@ Before compiling, ensure you are inside the container and have loaded the necess
 
 ## Usage & Configuration
 
-Upon running `./progetto`, the application will launch an interactive command-line interface (CLI). You will be prompted to configure the simulation in the following order:
+Upon running `./heat_equation`, the application will launch an interactive command-line interface (CLI). You will be prompted to configure the simulation in the following order:
 
 ### 1. Mesh Generation
 * **Generate internal grid?**
@@ -177,4 +152,3 @@ Since Doxygen is already available in the container, simply run the following co
 doxygen Doxyfile
 ```
 You can view the documentation by opening the index.html file located in docs/html/ inside your browser.
->>>>>>> old_repo/main

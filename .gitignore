@@ -44,3 +44,9 @@ Progetto/build/progetto
 *.iml
 docs/
 
+# Ignora le mesh generate
+*.msh
+*.vtu
+
+# Ignora la cartella di build ovunque si trovi
+build/
