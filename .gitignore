@@ -34,3 +34,13 @@
 *.app
 
 */build/*
+*.vtk
+Progetto/build/Makefile
+Progetto/build/CMakeFiles/
+Progetto/build/cmake_install.cmake
+Progetto/build/CMakeCache.txt
+Progetto/build/progetto
+.idea/
+*.iml
+docs/
+
