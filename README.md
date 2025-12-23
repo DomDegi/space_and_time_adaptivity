@@ -102,6 +102,9 @@ Where the user-defined parameters are:
 * **Thermal Conductivity ($k$):** Rate of heat transfer [W/(m·K)].
 * **Source Intensity ($Q$):** Maximum volumetric power density [W/m³].
 
+⚠️ **Important:** All material parameters ($\rho, c_p, k$) must be **strictly positive**.
+> Setting these values to zero or negative numbers will violate the **Symmetric Positive Definite (SPD)** property required by the Conjugate Gradient (CG) solver, causing immediate runtime errors (e.g., `NaN` residuals).
+
 ### 4. Solver & Time Stepping (Optional)
 The program asks: *"Do you want to customize solver & time adaptivity settings?"*
 * **No:** Uses defaults ($\theta=0.5$ Crank-Nicolson, Tol=10^{-6}).
