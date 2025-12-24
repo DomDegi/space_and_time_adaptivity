@@ -25,7 +25,7 @@ find_package(MPI REQUIRED)
 set(CMAKE_CXX_COMPILER "${MPI_CXX_COMPILER}")
 
 # Boost Configuration
-# HINTS è fondamentale su cluster per trovare le librerie nei percorsi dei moduli
+# HINTS is essential on clusters to find libraries in module paths
 find_package(Boost 1.72.0 REQUIRED
   COMPONENTS filesystem iostreams serialization
   HINTS ${BOOST_DIR} $ENV{BOOST_DIR} $ENV{mkBoostPrefix}
