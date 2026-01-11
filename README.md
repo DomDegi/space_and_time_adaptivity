@@ -66,11 +66,15 @@ Before compiling, ensure you are inside the container and have loaded the necess
     ```bash
     ./heat-equation
     ```
-    Or specify a custom parameter file:
+    Or with MPI (parallel execution):
     ```bash
-    ./heat-equation my_parameters.prm
+    mpirun -np 4 ./heat-equation
     ```
-    *(Note: The `solutions` directory will be created automatically by the program).*
+    
+    **Note on L2 Error Computation:**
+    - **Serial mode** (1 process): L2 errors are computed against reference solution
+    - **Parallel mode** (>1 process): Reference solver is disabled (too slow). L2 errors will be NaN
+    - To compute L2 errors with MPI, run with 1 process: `mpirun -np 1 ./heat-equation`
 
 ---
 
@@ -167,7 +171,11 @@ Previous versions used an interactive CLI. This has been replaced with the param
 ## Output
 
 Results are saved in the `build/solutions/` directory:
-* **VTK Files:** `solution-00001.vtk`, etc. (Open with Paraview or VisIt).
+* **VTK Files (Serial):** `solution-00001.vtu`, etc. (single-process execution)
+  * Open directly with Paraview or VisIt
+* **Parallel VTK Files:** `solution-00001.pvtu` (multi-process execution with MPI)
+  * **Important:** Always open the `.pvtu` file, not the `.vtu` files—Paraview automatically loads the distributed partitions
+  * The `.pvtu` file is a metadata file that references the `.vtu` files for each process
 * **CSV Logs:** `time_log.csv` (step sizes) and `mesh_log.csv` (DoF counts).
 * **Summary:** `summary_comparison.csv` (created in Mode 0 for performance analysis).
 

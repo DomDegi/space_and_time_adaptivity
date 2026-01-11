@@ -19,10 +19,12 @@
 #include <deal.II/numerics/matrix_tools.h>
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/solver_control.h>
+#include <deal.II/lac/sparsity_tools.h>
 
 #include <iostream>
 #include <fstream>
 #include <chrono>
+#include <filesystem>
 
 namespace Progetto
 {
@@ -91,8 +93,14 @@ namespace Progetto
   // ==========================================================================
 
   template <int dim>
-  HeatEquation<dim>::HeatEquation(const HeatEquationParameters &params)
-    : fe(1)
+  HeatEquation<dim>::HeatEquation(const HeatEquationParameters &params, MPI_Comm comm)
+    : mpi_communicator(comm)
+    , pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_communicator) == 0))
+    , triangulation(mpi_communicator,
+                    typename Triangulation<dim>::MeshSmoothing(
+                      Triangulation<dim>::smoothing_on_refinement |
+                      Triangulation<dim>::smoothing_on_coarsening))
+    , fe(1)
     , dof_handler(triangulation)
     , time_step(params.initial_time_step)
     , use_space_adaptivity(params.use_space_adaptivity)
@@ -131,121 +139,198 @@ namespace Progetto
   {
     dof_handler.distribute_dofs(fe);
 
-    std::cout << "\n===========================================\n"
-              << "[" << run_name << "] Number of active cells: " << triangulation.n_active_cells() << "\n"
-              << "[" << run_name << "] Number of degrees of freedom: " << dof_handler.n_dofs() << "\n"
-              << "===========================================\n";
+    locally_owned_dofs = dof_handler.locally_owned_dofs();
+    DoFTools::extract_locally_relevant_dofs(dof_handler, locally_relevant_dofs);
+
+    pcout << "\n===========================================\n"
+          << "[" << run_name << "] Number of active cells: " << triangulation.n_global_active_cells() << "\n"
+          << "[" << run_name << "] Number of degrees of freedom: " << dof_handler.n_dofs() << "\n"
+          << "===========================================\n";
 
     constraints.clear();
+    constraints.reinit(locally_relevant_dofs);
     DoFTools::make_hanging_node_constraints(dof_handler, constraints);
     constraints.close();
 
-    DynamicSparsityPattern dsp(dof_handler.n_dofs());
-    DoFTools::make_sparsity_pattern(dof_handler, dsp, constraints, true);
-    sparsity_pattern.copy_from(dsp);
+    DynamicSparsityPattern dsp(locally_relevant_dofs);
+    DoFTools::make_sparsity_pattern(dof_handler, dsp, constraints, false);
 
-    mass_matrix.reinit(sparsity_pattern);
-    laplace_matrix.reinit(sparsity_pattern);
-    system_matrix.reinit(sparsity_pattern);
+    SparsityTools::distribute_sparsity_pattern(dsp,
+                                               locally_owned_dofs,
+                                               mpi_communicator,
+                                               locally_relevant_dofs);
 
+    mass_matrix.reinit(locally_owned_dofs, locally_owned_dofs, dsp, mpi_communicator);
+    laplace_matrix.reinit(locally_owned_dofs, locally_owned_dofs, dsp, mpi_communicator);
+    system_matrix.reinit(locally_owned_dofs, locally_owned_dofs, dsp, mpi_communicator);
+
+    solution.reinit(locally_owned_dofs, mpi_communicator);
+    old_solution.reinit(locally_owned_dofs, mpi_communicator);
+    system_rhs.reinit(locally_owned_dofs, mpi_communicator);
+    locally_relevant_solution.reinit(locally_owned_dofs, locally_relevant_dofs, mpi_communicator);
+
+    // --- FIX: Pass 'constraints' to MatrixCreator ---
+    // This ensures assembly respects hanging nodes and doesn't write to forbidden rows
+    
     // Assemble Mass Matrix: M_ij = integral( phi_i * phi_j )
-    MatrixCreator::create_mass_matrix(dof_handler, QGauss<dim>(fe.degree + 1), mass_matrix);
-    // Multiply by Density * Specific Heat (rho * c_p)
+    MatrixCreator::create_mass_matrix(dof_handler, QGauss<dim>(fe.degree + 1), mass_matrix,
+                                      (const Function<dim> *)nullptr, constraints);
     mass_matrix *= (density * specific_heat);
 
     // Assemble Laplace Matrix: A_ij = integral( grad(phi_i) * grad(phi_j) )
-    MatrixCreator::create_laplace_matrix(dof_handler, QGauss<dim>(fe.degree + 1), laplace_matrix);
-    // Multiply by Thermal Conductivity (k)
+    MatrixCreator::create_laplace_matrix(dof_handler, QGauss<dim>(fe.degree + 1), laplace_matrix,
+                                         (const Function<dim> *)nullptr, constraints);
     laplace_matrix *= thermal_conductivity;
-
-    solution.reinit(dof_handler.n_dofs());
-    old_solution.reinit(dof_handler.n_dofs());
-    system_rhs.reinit(dof_handler.n_dofs());
-
-    // So that the preconditioner is initialized on first use
-    last_assembled_dt = -1.0;
   }
 
   template <int dim>
   void HeatEquation<dim>::solve_time_step()
   {
-    ReductionControl         solver_control(1000, 1e-14, 1e-8);
-    SolverCG<Vector<double>> cg(solver_control);
+    SolverControl solver_control(solution.size(), 1e-12 * system_rhs.l2_norm());
+    SolverCG<TrilinosWrappers::MPI::Vector> cg(solver_control);
+
+    TrilinosWrappers::PreconditionSSOR preconditioner;
+    preconditioner.initialize(system_matrix);
 
     cg.solve(system_matrix, solution, system_rhs, preconditioner);
 
-    constraints.distribute(solution);
+    // --- FIX: Correct ghost distribution for parallel AMR ---
+    // 1. Update ghost values in locally_relevant_solution using solution (owned).
+    locally_relevant_solution = solution;
+    // 2. Resolve hanging node constraints using the ghosts.
+    constraints.distribute(locally_relevant_solution);
+    // 3. Copy the correctly resolved owned values back to solution.
+    solution = locally_relevant_solution;
 
-    const unsigned int its = solver_control.last_step();
     stats.n_linear_solves++;
-    stats.register_cg_iterations(its);
+    stats.register_cg_iterations(solver_control.last_step());
   }
 
   template <int dim>
-  void HeatEquation<dim>::do_time_step(const Vector<double> &u_old,
+  void HeatEquation<dim>::do_time_step(const TrilinosWrappers::MPI::Vector &u_old,
                                        const double          dt,
                                        const double          t_new,
-                                       Vector<double> &      u_out)
+                                       TrilinosWrappers::MPI::Vector &u_out)
   {
-    Vector<double> tmp(u_old.size());
-    Vector<double> forcing_terms_local(u_old.size());
+    system_rhs = 0;
 
-    mass_matrix.vmult(system_rhs, u_old);
+    // Matrix contributions (these are safe as matrices are already condensed)
+    TrilinosWrappers::MPI::Vector tmp(locally_owned_dofs, mpi_communicator);
+
+    mass_matrix.vmult(tmp, u_old);
+    system_rhs.add(1.0, tmp);
 
     laplace_matrix.vmult(tmp, u_old);
     system_rhs.add(-(1.0 - theta) * dt, tmp);
 
-    // Instantiate RightHandSide with the scaling factor Q (source_intensity)
-    RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_a, rhs_x0, source_intensity);
+    // --- FIX: Manual Assembly of Source Term for Parallel AMR ---
+    // We cannot use VectorTools::create_right_hand_side + condense because
+    // condense() fails on distributed vectors when parents are ghosts.
+    {
+      const QGauss<dim> quadrature_formula(fe.degree + 1);
+      FEValues<dim> fe_values(fe, quadrature_formula,
+                              update_values | update_quadrature_points | update_JxW_values);
 
-    rhs_function.set_time(t_new);
-    VectorTools::create_right_hand_side(dof_handler, QGauss<dim>(fe.degree + 1), rhs_function, tmp);
-    forcing_terms_local = tmp;
-    forcing_terms_local *= dt * theta;
+      const unsigned int dofs_per_cell = fe.dofs_per_cell;
+      const unsigned int n_q_points = quadrature_formula.size();
 
-    rhs_function.set_time(t_new - dt);
-    VectorTools::create_right_hand_side(dof_handler, QGauss<dim>(fe.degree + 1), rhs_function, tmp);
-    forcing_terms_local.add(dt * (1.0 - theta), tmp);
+      Vector<double> cell_rhs(dofs_per_cell);
+      std::vector<types::global_dof_index> local_dof_indices(dofs_per_cell);
 
-    system_rhs += forcing_terms_local;
+      RightHandSide<dim> rhs_func(rhs_N, rhs_sigma, rhs_a, rhs_x0, source_intensity);
+      
+      TrilinosWrappers::MPI::Vector forcing(locally_owned_dofs, mpi_communicator);
 
+      for (const auto &cell : dof_handler.active_cell_iterators())
+      {
+        if (cell->is_locally_owned())
+        {
+          fe_values.reinit(cell);
+          cell_rhs = 0;
+          
+          // Force at t_new
+          rhs_func.set_time(t_new);
+          for (unsigned int q = 0; q < n_q_points; ++q)
+          {
+            const double val = rhs_func.value(fe_values.quadrature_point(q));
+            for (unsigned int i = 0; i < dofs_per_cell; ++i)
+              cell_rhs(i) += val * fe_values.shape_value(i, q) * fe_values.JxW(q) * theta * dt;
+          }
+
+          // Force at t_old
+          rhs_func.set_time(t_new - dt);
+          for (unsigned int q = 0; q < n_q_points; ++q)
+          {
+            const double val = rhs_func.value(fe_values.quadrature_point(q));
+            for (unsigned int i = 0; i < dofs_per_cell; ++i)
+              cell_rhs(i) += val * fe_values.shape_value(i, q) * fe_values.JxW(q) * (1.0 - theta) * dt;
+          }
+
+          cell->get_dof_indices(local_dof_indices);
+          
+          // This function handles constraints (adding hanging node contrib to parents)
+          // AND parallel assembly (compressing contributions to ghosts) correctly.
+          constraints.distribute_local_to_global(cell_rhs, local_dof_indices, forcing);
+        }
+      }
+      
+      forcing.compress(VectorOperation::add);
+      system_rhs.add(1.0, forcing);
+    }
+
+    // --- FIX: Compress RHS before solve to finalize parallel assembly ---
+    system_rhs.compress(VectorOperation::add);
+
+    // Prepare LHS Matrix
     system_matrix.copy_from(mass_matrix);
     system_matrix.add(theta * dt, laplace_matrix);
 
-    constraints.condense(system_matrix, system_rhs);
-
-    // Only reinitialize preconditioner when the matrix changes (i.e., when dt changes)
-    const double dt_tolerance = 1e-14;
-    if (std::abs(dt - last_assembled_dt) > dt_tolerance)
-    {
-      preconditioner.initialize(system_matrix, 1.0);
-      last_assembled_dt = dt;
-    }
+    // --- FIX: Compress Matrix after modifications ---
+    system_matrix.compress(VectorOperation::add);
 
     solve_time_step();
-
     u_out = solution;
   }
 
   template <int dim>
   void HeatEquation<dim>::output_results()
   {
-    std::filesystem::create_directories(output_dir);
-
     DataOut<dim> data_out;
     data_out.attach_dof_handler(dof_handler);
-    data_out.add_data_vector(solution, "U");
-    data_out.build_patches();
+    
+    // Add solution vector (ghosted) for correct boundary visualization
+    data_out.add_data_vector(locally_relevant_solution, "U");
+    
+    // Use the actual owner for each cell (avoids duplicate geometry)
+    Vector<float> subdomain(triangulation.n_active_cells());
+    {
+      unsigned int i = 0;
+      for (const auto &cell : triangulation.active_cell_iterators())
+      {
+        subdomain(i) = cell->subdomain_id();
+        i++;
+      }
+    }
+    data_out.add_data_vector(subdomain, "subdomain");
 
+    data_out.build_patches();
     data_out.set_flags(DataOutBase::VtkFlags(time, timestep_number));
 
-    // Use VTU format (compressed, binary) instead of VTK
-    const std::string filename = "solution-" + Utilities::int_to_string(timestep_number, 6) + ".vtu";
-    std::ofstream output(output_dir + "/" + filename);
-    data_out.write_vtu(output);
+    const std::string filename_base = "solution";
+    const unsigned int padding = 4;
+    data_out.write_vtu_with_pvtu_record(output_dir, filename_base, timestep_number, mpi_communicator, Utilities::MPI::n_mpi_processes(mpi_communicator), padding);
 
-    // Record time and filename for PVD master file
-    times_and_names.push_back({time, filename});
+    MPI_Barrier(mpi_communicator);
+
+    if (Utilities::MPI::this_mpi_process(mpi_communicator) == 0)
+    {
+      const std::string filename_full = filename_base + "_" + Utilities::int_to_string(timestep_number, padding) + ".pvtu";
+      if (times_and_names.empty() || std::abs(times_and_names.back().first - time) > 1e-9)
+        times_and_names.push_back({time, filename_full});
+
+      std::ofstream pvd_output(output_dir + "solution.pvd");
+      DataOutBase::write_pvd_record(pvd_output, times_and_names);
+    }
   }
 
   template <int dim>
@@ -261,17 +346,20 @@ namespace Progetto
   void HeatEquation<dim>::log_mesh_event(const unsigned int marked_refine,
                                          const unsigned int marked_coarsen) const
   {
-    std::filesystem::create_directories(output_dir);
-    const std::string log_path = output_dir + "/mesh_log.csv";
-    const bool write_header = !std::filesystem::exists(log_path);
+    if (Utilities::MPI::this_mpi_process(mpi_communicator) == 0)
+    {
+      std::filesystem::create_directories(output_dir);
+      const std::string log_path = output_dir + "mesh_log.csv";
+      const bool write_header = !std::filesystem::exists(log_path);
 
-    std::ofstream log(log_path, std::ios::app);
-    if (write_header)
-      log << "timestep,time,active_cells,dofs,levels,marked_refine,marked_coarsen\n";
+      std::ofstream log(log_path, std::ios::app);
+      if (write_header)
+        log << "timestep,time,active_cells,dofs,levels,marked_refine,marked_coarsen\n";
 
-    log << timestep_number << "," << time << ","
-        << triangulation.n_active_cells() << "," << dof_handler.n_dofs() << ","
-        << triangulation.n_levels() << "," << marked_refine << "," << marked_coarsen << "\n";
+      log << timestep_number << "," << time << ","
+          << triangulation.n_global_active_cells() << "," << dof_handler.n_dofs() << ","
+          << triangulation.n_levels() << "," << marked_refine << "," << marked_coarsen << "\n";
+    }
   }
 
   template <int dim>
@@ -279,31 +367,44 @@ namespace Progetto
                                          const int accepted, const double err_est,
                                          const double new_dt) const
   {
-    std::filesystem::create_directories(output_dir);
-    const std::string log_path = output_dir + "/time_log.csv";
-    const bool write_header = !std::filesystem::exists(log_path);
+    if (Utilities::MPI::this_mpi_process(mpi_communicator) == 0)
+    {
+      std::filesystem::create_directories(output_dir);
+      const std::string log_path = output_dir + "time_log.csv";
+      const bool write_header = !std::filesystem::exists(log_path);
 
-    std::ofstream log(log_path, std::ios::app);
-    if (write_header)
-      log << "timestep,time,dt,accepted,error_est,new_dt\n";
+      std::ofstream log(log_path, std::ios::app);
+      if (write_header)
+        log << "timestep,time,dt,accepted,error_est,new_dt\n";
 
-    log << timestep_number << "," << t_now << "," << dt_now << ","
-        << accepted << "," << err_est << "," << new_dt << "\n";
+      log << timestep_number << "," << t_now << "," << dt_now << ","
+          << accepted << "," << err_est << "," << new_dt << "\n";
+    }
   }
 
   template <int dim>
   void HeatEquation<dim>::refine_mesh(const unsigned int min_grid_level,
                                       const unsigned int max_grid_level)
   {
-    Vector<float> estimated_error_per_cell(triangulation.n_active_cells());
+    // --- FIX: Ensure ghosts are up-to-date before error estimation ---
+    locally_relevant_solution = solution;
+    constraints.distribute(locally_relevant_solution);
 
+    Vector<float> estimated_error_per_cell(triangulation.n_active_cells());
+    
     KellyErrorEstimator<dim>::estimate(dof_handler,
                                        QGauss<dim - 1>(fe.degree + 1),
                                        std::map<types::boundary_id, const Function<dim> *>(),
-                                       solution,
-                                       estimated_error_per_cell);
+                                       locally_relevant_solution,
+                                       estimated_error_per_cell,
+                                       ComponentMask(),
+                                       nullptr,
+                                       0,
+                                       triangulation.locally_owned_subdomain());
 
-    GridRefinement::refine_and_coarsen_fixed_fraction(triangulation, estimated_error_per_cell, 0.6, 0.4);
+    // Use parallel distributed refinement
+    parallel::distributed::GridRefinement::refine_and_coarsen_fixed_fraction(
+        triangulation, estimated_error_per_cell, 0.3, 0.03);
 
     if (triangulation.n_levels() > 0)
     {
@@ -324,30 +425,73 @@ namespace Progetto
       if (cell->coarsen_flag_set()) ++marked_coarsen;
     }
 
-    std::cout << "[" << run_name << "][AMR] refine_mesh at t=" << time
-              << " (step " << timestep_number << ")"
-              << " | active_cells=" << triangulation.n_active_cells()
-              << " dofs=" << dof_handler.n_dofs()
-              << " levels=" << triangulation.n_levels()
-              << " | marked_refine=" << marked_refine
-              << " marked_coarsen=" << marked_coarsen << "\n";
+    pcout << "[" << run_name << "][AMR] refine_mesh at t=" << time
+          << " (step " << timestep_number << ")"
+          << " | active_cells=" << triangulation.n_global_active_cells()
+          << " dofs=" << dof_handler.n_dofs()
+          << " levels=" << triangulation.n_levels()
+          << " | marked_refine=" << marked_refine
+          << " marked_coarsen=" << marked_coarsen << "\n";
 
     log_mesh_event(marked_refine, marked_coarsen);
 
-    SolutionTransfer<dim> solution_trans(dof_handler);
-    Vector<double> previous_solution = solution;
+    // Use parallel solution transfer
+    parallel::distributed::SolutionTransfer<dim, TrilinosWrappers::MPI::Vector> solution_trans(dof_handler);
 
     triangulation.prepare_coarsening_and_refinement();
-    solution_trans.prepare_for_coarsening_and_refinement(previous_solution);
+    
+    // Pass fully distributed vectors
+    std::vector<const TrilinosWrappers::MPI::Vector *> x_system(2);
+    x_system[0] = &solution;
+    x_system[1] = &old_solution;
+    solution_trans.prepare_for_coarsening_and_refinement(x_system);
+
     triangulation.execute_coarsening_and_refinement();
 
     setup_system();
 
-    solution_trans.interpolate(previous_solution, solution);
-    constraints.distribute(solution);
+    // Recover vectors
+    std::vector<TrilinosWrappers::MPI::Vector *> x_tmp(2);
+    TrilinosWrappers::MPI::Vector new_sol(locally_owned_dofs, mpi_communicator);
+    TrilinosWrappers::MPI::Vector new_old_sol(locally_owned_dofs, mpi_communicator);
+    x_tmp[0] = &new_sol;
+    x_tmp[1] = &new_old_sol;
 
-    old_solution.reinit(solution.size());
-    old_solution = solution;
+    solution_trans.interpolate(x_tmp);
+
+    // --- FIX: Correct constraint distribution for solution transfer ---
+    // We must use the ghosted vector locally_relevant_solution to satisfy
+    // constraints that depend on ghost values (parents).
+
+    // 1. Fix 'solution'
+    solution = new_sol;
+    locally_relevant_solution = solution;        // Communicate owned values to ghosts
+    constraints.distribute(locally_relevant_solution); // Resolve constraints
+    solution = locally_relevant_solution;        // Copy back resolved owned values
+
+    // 2. Fix 'old_solution'
+    old_solution = new_old_sol;
+    locally_relevant_solution = old_solution;    // Reuse ghosted vector for swap
+    constraints.distribute(locally_relevant_solution);
+    old_solution = locally_relevant_solution;
+
+    // Restore locally_relevant_solution to current solution for output/estimators
+    locally_relevant_solution = solution;
+    
+    // Update ghosted vector
+    locally_relevant_solution = solution;
+  }
+
+  template <int dim>
+  void HeatEquation<dim>::get_solution_serial(Vector<double> &out) const
+  {
+    // Copy the distributed Trilinos vector to a serial Vector<double>
+    // This works correctly when running on MPI_COMM_SELF (replicated reference)
+    out.reinit(solution.size());
+    for (unsigned int i = 0; i < solution.size(); ++i)
+    {
+      out(i) = solution(i);
+    }
   }
 
   template <int dim>
@@ -370,21 +514,21 @@ namespace Progetto
     double dt = std::min(time_step, end_time - time);
     
     // Perform three solves: one full step, two half steps
-    Vector<double> u_one(solution.size());
-    Vector<double> u_two(solution.size());
+    TrilinosWrappers::MPI::Vector u_one(locally_owned_dofs, mpi_communicator);
+    TrilinosWrappers::MPI::Vector u_two(locally_owned_dofs, mpi_communicator);
     const double t_one = time + dt;
 
     do_time_step(old_solution, dt, t_one, u_one);
     
     const double dt2 = 0.5 * dt;
-    Vector<double> u_half(solution.size());
+    TrilinosWrappers::MPI::Vector u_half(locally_owned_dofs, mpi_communicator);
     do_time_step(old_solution, dt2, time + dt2, u_half);
     do_time_step(u_half, dt2, t_one, u_two);
 
     // Compute error estimate
-    Vector<double> diff(u_two);
+    TrilinosWrappers::MPI::Vector diff = u_two;
     diff -= u_one;
-    const double error = diff.l2_norm();
+    const double error = diff.l2_norm(); // Trilinos handles MPI reduction automatically
     const double sol_norm = std::max(1.0, u_two.l2_norm());
     const double tol_scaled = time_step_tolerance * sol_norm + 1e-16;
     const bool hit_min_dt = (dt <= time_step_min * 1.000001);
@@ -397,20 +541,21 @@ namespace Progetto
       ++timestep_number;
       solution = u_two;
       old_solution = solution;
+      locally_relevant_solution = solution;
 
       if (hit_min_dt && error > tol_scaled)
       {
-        std::cout << "\n   !!! FORCED ACCEPTANCE AT MIN_DT !!!\n"
-                  << "   Time: " << time << " | Step: " << dt << " | Error: " << error << "\n";
+        pcout << "\n   !!! FORCED ACCEPTANCE AT MIN_DT !!!\n"
+              << "   Time: " << time << " | Step: " << dt << " | Error: " << error << "\n";
       }
       else
       {
-        std::cout << "[" << run_name << "] Time step " << timestep_number
-                  << " accepted at t=" << time << "  dt=" << dt << "  error=" << error << "\n";
+        pcout << "[" << run_name << "] Time step " << timestep_number
+              << " accepted at t=" << time << "  dt=" << dt << "  error=" << error << "\n";
       }
 
       stats.register_time_step_attempt(dt, true);
-      stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
+      stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_global_active_cells());
 
       // Adjust time step for next iteration
       double err_ratio = (error > 0.0) ? (time_step_tolerance * sol_norm / error) : 1e6;
@@ -428,7 +573,7 @@ namespace Progetto
       double dt_new = dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
       dt_new = std::max(dt_new, time_step_min);
       time_step = dt_new;
-      std::cout << "[" << run_name << "] Rejected at t=" << time << " dt=" << dt << " err=" << error << " new_dt=" << time_step << "\n";
+      pcout << "[" << run_name << "] Rejected at t=" << time << " dt=" << dt << " err=" << error << " new_dt=" << time_step << "\n";
       stats.register_time_step_attempt(dt, false);
       log_time_event(time, dt, 0, error, time_step);
       
@@ -443,16 +588,16 @@ namespace Progetto
     const double t_new = time + dt;
     
     // Estimate error from RHS change
-    Vector<double> rhs_new(solution.size());
+    TrilinosWrappers::MPI::Vector rhs_new(locally_owned_dofs, mpi_communicator);
     RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_a, rhs_x0, source_intensity);
     rhs_function.set_time(t_new);
     VectorTools::create_right_hand_side(dof_handler, QGauss<dim>(fe.degree + 1), rhs_function, rhs_new);
 
-    Vector<double> rhs_old(solution.size());
+    TrilinosWrappers::MPI::Vector rhs_old(locally_owned_dofs, mpi_communicator);
     rhs_function.set_time(time);
     VectorTools::create_right_hand_side(dof_handler, QGauss<dim>(fe.degree + 1), rhs_function, rhs_old);
 
-    Vector<double> rhs_diff = rhs_new;
+    TrilinosWrappers::MPI::Vector rhs_diff = rhs_new;
     rhs_diff -= rhs_old;
     const double rhs_diff_norm = rhs_diff.l2_norm();
     const double rhs_norm = std::max(1.0, rhs_new.l2_norm());
@@ -460,18 +605,19 @@ namespace Progetto
     const double tol = time_step_tolerance;
 
     // Solve the time step (always accepted)
-    Vector<double> u_new(solution.size());
+    TrilinosWrappers::MPI::Vector u_new(locally_owned_dofs, mpi_communicator);
     do_time_step(old_solution, dt, t_new, u_new);
 
     time = t_new;
     ++timestep_number;
     solution = u_new;
     old_solution = solution;
+    locally_relevant_solution = solution;
 
-    std::cout << "[" << run_name << "] Heuristic step " << timestep_number 
-              << " at t=" << time << " dt=" << dt << " err_est=" << error_est << "\n";
+    pcout << "[" << run_name << "] Heuristic step " << timestep_number 
+          << " at t=" << time << " dt=" << dt << " err_est=" << error_est << "\n";
     stats.register_time_step_attempt(dt, true);
-    stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
+    stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_global_active_cells());
 
     // Adjust time step for next iteration based on heuristic rules
     double factor = 1.0;
@@ -492,7 +638,7 @@ namespace Progetto
     if ((timestep_number % refine_every_n_steps == 0) && use_space_adaptivity)
     {
       refine_mesh(initial_global_refinement, initial_global_refinement + n_adaptive_pre_refinement_steps);
-      stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
+      stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_global_active_cells());
     }
   }
 
@@ -500,7 +646,6 @@ namespace Progetto
   void HeatEquation<dim>::run()
   {
     stats.reset();
-    std::filesystem::create_directories(output_dir);
     const auto t_start = std::chrono::steady_clock::now();
 
     if (use_mesh)
@@ -523,21 +668,32 @@ namespace Progetto
 
     VectorTools::interpolate(dof_handler, Functions::ZeroFunction<dim>(), old_solution);
     solution = old_solution;
-    stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
+    locally_relevant_solution = solution;
+    stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_global_active_cells());
+
+    // --- FIX: Ensure output directory exists before any rank attempts to write ---
+    if (Utilities::MPI::this_mpi_process(mpi_communicator) == 0)
+    {
+      std::filesystem::create_directories(output_dir);
+    }
+    // Synchronize to ensure directory exists before continuing
+    MPI_Barrier(mpi_communicator);
+    // ---------------------------------------------------------------------------
 
     if (use_space_adaptivity && n_adaptive_pre_refinement_steps > 0)
     {
       for (unsigned int pre = 0; pre < n_adaptive_pre_refinement_steps; ++pre)
       {
-        std::cout << "\n[" << run_name << "][Pre-refinement] step " << (pre + 1)
-                  << " / " << n_adaptive_pre_refinement_steps << "\n";
+        pcout << "\n[" << run_name << "][Pre-refinement] step " << (pre + 1)
+              << " / " << n_adaptive_pre_refinement_steps << "\n";
         const double dt_probe = time_step;
-        Vector<double> u_probe(solution.size());
+        TrilinosWrappers::MPI::Vector u_probe(locally_owned_dofs, mpi_communicator);
         do_time_step(old_solution, dt_probe, dt_probe, u_probe);
         refine_mesh(initial_global_refinement, initial_global_refinement + n_adaptive_pre_refinement_steps);
         VectorTools::interpolate(dof_handler, Functions::ZeroFunction<dim>(), old_solution);
         solution = old_solution;
-        stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
+        locally_relevant_solution = solution;
+        stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_global_active_cells());
       }
     }
 
@@ -557,19 +713,22 @@ namespace Progetto
         const double t_new = time + dt;
 
         ++timestep_number;
-        std::cout << "[" << run_name << "] Time step " << timestep_number
-                  << " at t=" << t_new << "  dt=" << dt << "\n";
+        pcout << "[" << run_name << "] Time step " << timestep_number
+              << " at t=" << t_new << "  dt=" << dt << "\n";
 
         // Solve the time step
-        Vector<double> u_new(solution.size());
+        TrilinosWrappers::MPI::Vector u_new(locally_owned_dofs, mpi_communicator);
         do_time_step(old_solution, dt, t_new, u_new);
 
         time = t_new;
         solution = u_new;
         old_solution = solution;
+        locally_relevant_solution = solution;
 
         stats.register_time_step_attempt(dt, true);
-        stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
+        stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_global_active_cells());
+
+        MPI_Barrier(mpi_communicator);
 
         // Output if needed
         if (write_vtk && should_write_output())
@@ -625,14 +784,14 @@ namespace Progetto
 
     const auto t_end = std::chrono::steady_clock::now();
     stats.cpu_seconds_total = std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
-    std::cout << "[" << run_name << "] DONE. CPU seconds = " << stats.cpu_seconds_total << "\n";
+    pcout << "[" << run_name << "] DONE. CPU seconds = " << stats.cpu_seconds_total << "\n";
 
-    // Write PVD master file that links all timesteps to their physical times
-    if (write_vtk && !times_and_names.empty())
+    // Write PVD master file that links all timesteps to their physical times (only on rank 0)
+    if (write_vtk && !times_and_names.empty() && Utilities::MPI::this_mpi_process(mpi_communicator) == 0)
     {
-      std::ofstream pvd_output(output_dir + "/solution.pvd");
+      std::ofstream pvd_output(output_dir + "solution.pvd");
       DataOutBase::write_pvd_record(pvd_output, times_and_names);
-      std::cout << "[" << run_name << "] PVD master file written to " << output_dir << "/solution.pvd\n";
+      pcout << "[" << run_name << "] PVD master file written to " << output_dir << "/solution.pvd\n";
     }
   }
 

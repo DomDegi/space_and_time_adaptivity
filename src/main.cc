@@ -10,6 +10,8 @@
 #include "utilities.h"
 #include <deal.II/numerics/fe_field_function.h>
 #include <deal.II/base/parameter_handler.h>
+#include <deal.II/base/utilities.h>
+#include <deal.II/base/mpi.h>
 
 #include <iostream>
 #include <fstream>
@@ -71,7 +73,7 @@ static void declare_parameters(dealii::ParameterHandler &prm)
     prm.declare_entry("generate_mesh", "true",
                       dealii::Patterns::Bool(),
                       "Generate mesh internally (true) or load from file (false)");
-    prm.declare_entry("cells_per_direction", "10",
+    prm.declare_entry("cells_per_direction", "5",
                       dealii::Patterns::Integer(1),
                       "Number of cells per direction for generated mesh");
   }
@@ -174,6 +176,9 @@ int main(int argc, char *argv[])
     using namespace Progetto;
     using namespace dealii;
 
+    // Initialize MPI
+    Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
+
     // Parse command line arguments
     std::string parameter_file = "parameters.prm";
     if (argc > 1)
@@ -183,24 +188,38 @@ int main(int argc, char *argv[])
     ParameterHandler prm;
     declare_parameters(prm);
 
-    // Check if parameter file exists
-    if (!std::filesystem::exists(parameter_file))
+    // Check if parameter file exists (only Rank 0 writes)
+    if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
     {
-      std::cout << "Parameter file '" << parameter_file << "' not found.\n";
-      std::cout << "Creating default parameter file...\n";
-      std::ofstream out(parameter_file);
-      prm.print_parameters(out, ParameterHandler::Text);
-      out.close();
-      std::cout << "Default parameter file created: " << parameter_file << "\n";
-      std::cout << "Please edit the file and run again.\n";
-      return 0;
+      if (!std::filesystem::exists(parameter_file))
+      {
+        std::cout << "Parameter file '" << parameter_file << "' not found.\n";
+        std::cout << "Creating default parameter file...\n";
+        std::ofstream out(parameter_file);
+        prm.print_parameters(out, ParameterHandler::Text);
+        out.close();
+        std::cout << "Default parameter file created: " << parameter_file << "\n";
+        std::cout << "Please edit the file and run again.\n";
+        return 0;
+      }
+
+      // Read parameter file
+      std::cout << "Reading parameters from: " << parameter_file << "\n";
     }
 
-    // Read parameter file
-    std::cout << "Reading parameters from: " << parameter_file << "\n";
+    // Ensure all processes wait for file creation/reading before proceeding
+    MPI_Barrier(MPI_COMM_WORLD);
+    
     prm.parse_input(parameter_file);
 
-    clear_solutions_folder();
+    // --- FIX: Only Rank 0 clears the folder to avoid filesystem race conditions ---
+    if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+    {
+       clear_solutions_folder();
+    }
+    
+    // Ensure all processes wait until folder is cleared
+    MPI_Barrier(MPI_COMM_WORLD);
 
     // --- Read Mesh Parameters ---
     prm.enter_subsection("Mesh");
@@ -288,59 +307,85 @@ int main(int argc, char *argv[])
     const double output_interval = prm.get_double("output_time_interval");
     prm.leave_subsection();
 
-    std::cout << "\n============================================\n"
-              << "       SIMULATION CONFIGURATION             \n"
-              << "============================================\n"
-              << "[Mesh]\n"
-              << "  Generate mesh: " << (mesh ? "Yes" : "Load from file") << "\n"
-              << "  Cells per direction: " << cells_per_direction << "\n"
-              << "\n[Physical Parameters]\n"
-              << "  Final time T: " << T_end << "\n"
-              << "  Source: sigma=" << sigma << ", (x0,y0)=(" << x0_x << "," << x0_y << ")\n"
-              << "  Source: N=" << N_val << ", A=" << a_val << "\n"
-              << "\n[Material Properties]\n"
-              << "  Density (rho): " << user_rho << " kg/m^3\n"
-              << "  Specific heat (c_p): " << user_cp << " J/(kg K)\n"
-              << "  Thermal conductivity (k): " << user_k << " W/(m K)\n"
-              << "  Source intensity (Q): " << user_Q << " W/m^3\n"
-              << "\n[Solver Settings]\n"
-              << "  Theta: " << user_theta << " (" 
-              << (user_theta == 0.0 ? "Explicit Euler" : 
-                  user_theta == 0.5 ? "Crank-Nicolson" : 
-                  user_theta == 1.0 ? "Implicit Euler" : "Mixed") << ")\n"
-              << "  Time step tolerance: " << user_tol << "\n"
-              << "  Minimum time step: " << user_dt_min << "\n"
-              << "  Step-doubling: " << (time_step_doubling ? "Yes" : "Heuristic") << "\n"
-              << "\n[Simulation Control]\n"
-              << "  Run mode: " << run_mode << " (" 
-              << (run_mode == 0 ? "Full Comparison" :
-                  run_mode == 1 ? "Fixed/Fixed" :
-                  run_mode == 2 ? "Adaptive Space/Fixed Time" :
-                  run_mode == 3 ? "Fixed Space/Adaptive Time" : "Adaptive/Adaptive") << ")\n"
-              << "  Run reference: " << (run_reference ? "Yes" : "No") << "\n"
-              << "  Initial time step: " << dt0 << "\n"
-              << "  Base refinement: " << base_refine << "\n"
-              << "  Pre-refinement steps: " << pre_steps << "\n"
-              << "  Refine every N steps: " << refine_every << "\n"
-              << "  Write VTK: " << (write_vtk ? "Yes" : "No") << "\n"
-              << "  Output mode: " << (output_at_each ? "Each timestep (debug)" : "Fixed time intervals") << "\n"
-              << "  Output time interval: " << output_interval << "\n"
-              << "============================================\n\n";
+    if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+    {
+      std::cout << "\n============================================\n"
+                << "       SIMULATION CONFIGURATION             \n"
+                << "============================================\n"
+                << "[Mesh]\n"
+                << "  Generate mesh: " << (mesh ? "Yes" : "Load from file") << "\n"
+                << "  Cells per direction: " << cells_per_direction << "\n"
+                << "\n[Physical Parameters]\n"
+                << "  Final time T: " << T_end << "\n"
+                << "  Source: sigma=" << sigma << ", (x0,y0)=(" << x0_x << "," << x0_y << ")\n"
+                << "  Source: N=" << N_val << ", A=" << a_val << "\n"
+                << "\n[Material Properties]\n"
+                << "  Density (rho): " << user_rho << " kg/m^3\n"
+                << "  Specific heat (c_p): " << user_cp << " J/(kg K)\n"
+                << "  Thermal conductivity (k): " << user_k << " W/(m K)\n"
+                << "  Source intensity (Q): " << user_Q << " W/m^3\n"
+                << "\n[Solver Settings]\n"
+                << "  Theta: " << user_theta << " (" 
+                << (user_theta == 0.0 ? "Explicit Euler" : 
+                    user_theta == 0.5 ? "Crank-Nicolson" : 
+                    user_theta == 1.0 ? "Implicit Euler" : "Mixed") << ")\n"
+                << "  Time step tolerance: " << user_tol << "\n"
+                << "  Minimum time step: " << user_dt_min << "\n"
+                << "  Step-doubling: " << (time_step_doubling ? "Yes" : "Heuristic") << "\n"
+                << "\n[Simulation Control]\n"
+                << "  Run mode: " << run_mode << " (" 
+                << (run_mode == 0 ? "Full Comparison" :
+                    run_mode == 1 ? "Fixed/Fixed" :
+                    run_mode == 2 ? "Adaptive Space/Fixed Time" :
+                    run_mode == 3 ? "Fixed Space/Adaptive Time" : "Adaptive/Adaptive") << ")\n"
+                << "  Run reference: " << (run_reference ? "Yes" : "No") << "\n"
+                << "  Initial time step: " << dt0 << "\n"
+                << "  Base refinement: " << base_refine << "\n"
+                << "  Pre-refinement steps: " << pre_steps << "\n"
+                << "  Refine every N steps: " << refine_every << "\n"
+                << "  Write VTK: " << (write_vtk ? "Yes" : "No") << "\n"
+                << "  Output mode: " << (output_at_each ? "Each timestep (debug)" : "Fixed time intervals") << "\n"
+                << "  Output time interval: " << output_interval << "\n"
+                << "============================================\n\n";
+    }
+    
+    const std::string summary_path = "solutions/summary_comparison.csv";
 
-    const double dt_ref = dt0 / 10.0;
-    const unsigned int ref_refine = base_refine + 2;
+    // Replicated Reference Strategy - Disabled for parallel execution (too slow)
+    // Check if running in parallel
+    const unsigned int mpi_size = Utilities::MPI::n_mpi_processes(MPI_COMM_WORLD);
+    if (run_reference && mpi_size > 1)
+    {
+      if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+      {
+        std::cout << "\n" << std::string(70, '=') << "\n"
+                  << "WARNING: Reference solver disabled for MPI execution (>1 process)\n"
+                  << "Running the reference solution on every MPI rank is prohibitively slow.\n"
+                  << "L2 errors will be reported as NaN.\n"
+                  << "To compute L2 errors, run with: mpirun -np 1 ./heat-equation <params>\n"
+                  << std::string(70, '=') << "\n\n";
+      }
+      run_reference = false;
+    }
 
-    std::unique_ptr<HeatEquation<2>> reference_solver;
+    // Reference solver disabled for MPI
     std::unique_ptr<dealii::Functions::FEFieldFunction<2>> reference_function;
+    std::unique_ptr<HeatEquation<2>> reference_solver;
+    Vector<double> serial_reference_solution;
 
     if (run_reference)
     {
+      // Run reference solver replicated on all ranks using MPI_COMM_SELF
+      // This ensures every process has a copy for L2 error comparison
+      if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+        std::cout << "\n========== RUN REFERENCE (Replicated on all ranks with MPI_COMM_SELF) ==========\n";
+      
       int ref_cells = cells_per_direction;
       if (mesh) ref_cells = static_cast<int>(std::max(1, cells_per_direction * 2));
 
       HeatEquationParameters params;
       params.run_name = "reference";
-      params.output_dir = "solutions/reference";
+      params.output_dir = "solutions/reference/";
       params.use_space_adaptivity = false;
       params.use_time_adaptivity = false;
       params.use_step_doubling = false;
@@ -359,35 +404,43 @@ int main(int argc, char *argv[])
       params.time_step_tolerance = user_tol;
       params.time_step_min = user_dt_min;
       params.end_time = T_end;
-      params.initial_time_step = dt_ref;
-      params.initial_global_refinement = ref_refine;
+      params.initial_time_step = dt0 / 10.0;
+      params.initial_global_refinement = base_refine + 2;
       params.n_adaptive_pre_refinement_steps = 0;
       params.refine_every_n_steps = refine_every;
       params.write_vtk = false;
       params.output_at_each_timestep = output_at_each;
       params.output_time_interval = output_interval;
 
-      reference_solver = std::make_unique<HeatEquation<2>>(params);
-
-      std::cout << "\n========== RUN REFERENCE (fixed mesh + fixed dt) ==========\n";
+      // Create reference solver with MPI_COMM_SELF so each rank solves it independently
+      reference_solver = std::make_unique<HeatEquation<2>>(params, MPI_COMM_SELF);
       reference_solver->run();
 
+      // Extract solution to serial vector for FEFieldFunction
+      serial_reference_solution.reinit(reference_solver->get_dof_handler().n_dofs());
+      reference_solver->get_solution_serial(serial_reference_solution);
+
+      // Create FEFieldFunction using the serial vector
       reference_function = std::make_unique<dealii::Functions::FEFieldFunction<2>>(
-        reference_solver->get_dof_handler(), reference_solver->get_solution());
+          reference_solver->get_dof_handler(),
+          serial_reference_solution
+      );
       reference_function->set_time(T_end);
+      
+      if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+        std::cout << "\nReference solution prepared for parallel comparison.\n";
     }
     else
     {
-      std::cout << "\nSkipping reference solver. L2 errors will be NaN.\n";
+      if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+        std::cout << "\nSkipping reference solver. L2 errors will be NaN.\n";
     }
-
-    const std::string summary_path = "solutions/summary_comparison.csv";
 
     auto run_one = [&](const std::string &name, bool use_space, bool use_time, bool use_sd)
     {
       HeatEquationParameters params;
       params.run_name = name;
-      params.output_dir = "solutions/" + name;
+      params.output_dir = "solutions/" + name + "/";
       params.use_space_adaptivity = use_space;
       params.use_time_adaptivity = use_time;
       params.use_step_doubling = use_sd;
@@ -416,15 +469,19 @@ int main(int argc, char *argv[])
 
       HeatEquation<2> solver(params);
 
-      std::cout << "\n========== RUN " << name << " ==========\n";
+      if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+        std::cout << "\n========== RUN " << name << " ==========\n";
       solver.run();
 
       double l2_err = std::numeric_limits<double>::quiet_NaN();
       if (reference_function)
         l2_err = solver.compute_L2_error_against(*reference_function);
 
-      std::cout << "[" << name << "] L2 error at T = " << l2_err << "\n";
-      append_comparison_csv(summary_path, name, l2_err, solver.get_stats());
+      if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+      {
+        std::cout << "[" << name << "] L2 error at T = " << l2_err << "\n";
+        append_comparison_csv(summary_path, name, l2_err, solver.get_stats());
+      }
     };
 
     if (run_mode == 0)
@@ -433,7 +490,10 @@ int main(int argc, char *argv[])
        run_one("adaptive_space_fixed_time", true,  false, false);
        run_one("fixed_space_adaptive_time", false, true,  time_step_doubling);
        run_one("adaptive_space_adaptive_time", true,  true,  time_step_doubling);
-       std::cout << "\nComparison finished. CSV saved to: " << summary_path << "\n";
+       if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0) 
+       {
+          std::cout << "\nComparison finished. CSV saved to: " << summary_path << "\n";
+       }
     }
     else if (run_mode == 1) run_one("fixed_space_fixed_time", false, false, false);
     else if (run_mode == 2) run_one("adaptive_space_fixed_time", true,  false, false);

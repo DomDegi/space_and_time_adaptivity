@@ -8,13 +8,26 @@
 
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/function.h>
+#include <deal.II/base/index_set.h>
+#include <deal.II/base/conditional_ostream.h>
 #include <deal.II/lac/vector.h>
 #include <deal.II/lac/full_matrix.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/precondition.h>
+#include <deal.II/lac/sparsity_tools.h>
+
+// Trilinos Wrappers for parallel computation
+#include <deal.II/lac/trilinos_vector.h>
+#include <deal.II/lac/trilinos_sparse_matrix.h>
+#include <deal.II/lac/trilinos_solver.h>
+#include <deal.II/lac/trilinos_precondition.h>
+
 #include <deal.II/grid/tria.h>
+#include <deal.II/distributed/tria.h>
+#include <deal.II/distributed/grid_refinement.h>
+#include <deal.II/distributed/solution_transfer.h>
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/fe/fe_q.h>
 
@@ -127,8 +140,10 @@ namespace Progetto
 
     /**
      * @brief Constructor initializing all simulation parameters.
+     * @param params Configuration parameters
+     * @param comm MPI communicator (default: MPI_COMM_WORLD)
      */
-    HeatEquation(const HeatEquationParameters &params);
+    HeatEquation(const HeatEquationParameters &params, MPI_Comm comm = MPI_COMM_WORLD);
 
     /**
      * @brief Main driver function.
@@ -136,8 +151,14 @@ namespace Progetto
     void run();
 
     const DoFHandler<dim> &get_dof_handler() const { return dof_handler; }
-    const Vector<double>  &get_solution()   const { return solution; }
+    const TrilinosWrappers::MPI::Vector &get_solution() const { return solution; }
     const RunStats        &get_stats()      const { return stats; }
+
+    /**
+     * @brief Extract solution as a serial Vector<double> for use with FEFieldFunction.
+     * Useful when running on MPI_COMM_SELF (replicated reference).
+     */
+    void get_solution_serial(Vector<double> &out) const;
 
     double compute_L2_error_against(const Function<dim> &reference_function) const;
 
@@ -145,10 +166,10 @@ namespace Progetto
     void setup_system();
     void solve_time_step();
 
-    void do_time_step(const Vector<double> &u_old,
+    void do_time_step(const TrilinosWrappers::MPI::Vector &u_old,
                       const double          dt,
                       const double          t_new,
-                      Vector<double> &      u_out);
+                      TrilinosWrappers::MPI::Vector &u_out);
 
     void output_results();
 
@@ -194,20 +215,31 @@ namespace Progetto
                         const double err_est,
                         const double new_dt) const;
 
-    // --- DEAL.II Objects ---
-    Triangulation<dim> triangulation;
+    // --- DEAL.II Objects (Parallel) ---
+    MPI_Comm mpi_communicator;
+    ConditionalOStream pcout;
+
+    parallel::distributed::Triangulation<dim> triangulation;
     const FE_Q<dim>    fe;
     DoFHandler<dim>    dof_handler;
     AffineConstraints<double> constraints;
 
-    SparsityPattern      sparsity_pattern;
-    SparseMatrix<double> mass_matrix;
-    SparseMatrix<double> laplace_matrix;
-    SparseMatrix<double> system_matrix;
+    // Parallel index sets
+    IndexSet locally_owned_dofs;
+    IndexSet locally_relevant_dofs;
 
-    Vector<double> solution;
-    Vector<double> old_solution;
-    Vector<double> system_rhs;
+    // Trilinos matrices and vectors
+    TrilinosWrappers::SparseMatrix mass_matrix;
+    TrilinosWrappers::SparseMatrix laplace_matrix;
+    TrilinosWrappers::SparseMatrix system_matrix;
+
+    // Fully distributed vectors for linear algebra
+    TrilinosWrappers::MPI::Vector solution;
+    TrilinosWrappers::MPI::Vector old_solution;
+    TrilinosWrappers::MPI::Vector system_rhs;
+
+    // Ghosted vector for output and error estimation
+    TrilinosWrappers::MPI::Vector locally_relevant_solution;
 
     double       time = 0.0;
     double       time_step;
@@ -254,7 +286,6 @@ namespace Progetto
     std::string output_dir;
 
     RunStats stats;
-    PreconditionSSOR<SparseMatrix<double>> preconditioner;
 
     /// Vector of (time, filename) pairs for PVD master file generation
     std::vector<std::pair<double, std::string>> times_and_names;
