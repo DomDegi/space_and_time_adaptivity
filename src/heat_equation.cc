@@ -5,6 +5,7 @@
 
 #include "heat_equation.h"
 #include <deal.II/base/utilities.h>
+#include <deal.II/base/work_stream.h>
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/grid_refinement.h>
 #include <deal.II/grid/grid_out.h>
@@ -27,6 +28,45 @@
 namespace Progetto
 {
   using namespace dealii;
+
+  // ========================================================================
+  // WorkStream Data Structures for Parallel Assembly
+  // ========================================================================
+
+  /**
+   * @struct RHSAssemblyScratchData
+   * @brief Scratch data for parallel RHS assembly (one per thread).
+   */
+  template <int dim>
+  struct RHSAssemblyScratchData
+  {
+    RHSAssemblyScratchData(const FiniteElement<dim> &fe,
+                           const Quadrature<dim>    &quadrature)
+      : fe_values(fe, quadrature,
+                  update_values | update_quadrature_points | update_JxW_values)
+      , rhs_values(quadrature.size())
+    {}
+
+    RHSAssemblyScratchData(const RHSAssemblyScratchData &scratch)
+      : fe_values(scratch.fe_values.get_fe(),
+                  scratch.fe_values.get_quadrature(),
+                  scratch.fe_values.get_update_flags())
+      , rhs_values(scratch.rhs_values)
+    {}
+
+    FEValues<dim>       fe_values;
+    std::vector<double> rhs_values;
+  };
+
+  /**
+   * @struct RHSAssemblyCopyData
+   * @brief Copy data for transferring local contributions to global RHS.
+   */
+  struct RHSAssemblyCopyData
+  {
+    Vector<double>                       cell_rhs;
+    std::vector<types::global_dof_index> local_dof_indices;
+  };
 
   // ==========================================================================
   // RunStats Implementation
@@ -195,19 +235,73 @@ namespace Progetto
     laplace_matrix.vmult(tmp, u_old);
     system_rhs.add(-(1.0 - theta) * dt, tmp);
 
-    // Instantiate RightHandSide with the scaling factor Q (source_intensity)
+    // --- WorkStream-based parallel assembly of forcing terms ---
     RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_a, rhs_x0, source_intensity);
-
+    
+    // Assemble forcing at t_new using WorkStream
+    forcing_terms_local = 0;
     rhs_function.set_time(t_new);
-    VectorTools::create_right_hand_side(dof_handler, QGauss<dim>(fe.degree + 1), rhs_function, tmp);
-    forcing_terms_local = tmp;
-    forcing_terms_local *= dt * theta;
-
+    
+    auto local_worker = [&](const typename DoFHandler<dim>::active_cell_iterator &cell,
+                            RHSAssemblyScratchData<dim> &scratch,
+                            RHSAssemblyCopyData         &copy_data)
+    {
+      const unsigned int dofs_per_cell = fe.n_dofs_per_cell();
+      const unsigned int n_q_points    = scratch.fe_values.get_quadrature().size();
+      
+      copy_data.cell_rhs.reinit(dofs_per_cell);
+      copy_data.local_dof_indices.resize(dofs_per_cell);
+      
+      scratch.fe_values.reinit(cell);
+      
+      // Evaluate RHS function at quadrature points
+      for (unsigned int q = 0; q < n_q_points; ++q)
+        scratch.rhs_values[q] = rhs_function.value(scratch.fe_values.quadrature_point(q));
+      
+      // Assemble local contribution
+      for (unsigned int i = 0; i < dofs_per_cell; ++i)
+      {
+        for (unsigned int q = 0; q < n_q_points; ++q)
+        {
+          copy_data.cell_rhs(i) += scratch.rhs_values[q] *
+                                   scratch.fe_values.shape_value(i, q) *
+                                   scratch.fe_values.JxW(q);
+        }
+      }
+      
+      cell->get_dof_indices(copy_data.local_dof_indices);
+    };
+    
+    auto copier = [&](const RHSAssemblyCopyData &copy_data)
+    {
+      constraints.distribute_local_to_global(copy_data.cell_rhs,
+                                             copy_data.local_dof_indices,
+                                             forcing_terms_local);
+    };
+    
+    WorkStream::run(dof_handler.begin_active(),
+                    dof_handler.end(),
+                    local_worker,
+                    copier,
+                    RHSAssemblyScratchData<dim>(fe, QGauss<dim>(fe.degree + 1)),
+                    RHSAssemblyCopyData());
+    
+    tmp = forcing_terms_local;
+    tmp *= dt * theta;
+    
+    // Assemble forcing at t_old using WorkStream
+    forcing_terms_local = 0;
     rhs_function.set_time(t_new - dt);
-    VectorTools::create_right_hand_side(dof_handler, QGauss<dim>(fe.degree + 1), rhs_function, tmp);
-    forcing_terms_local.add(dt * (1.0 - theta), tmp);
-
-    system_rhs += forcing_terms_local;
+    
+    WorkStream::run(dof_handler.begin_active(),
+                    dof_handler.end(),
+                    local_worker,
+                    copier,
+                    RHSAssemblyScratchData<dim>(fe, QGauss<dim>(fe.degree + 1)),
+                    RHSAssemblyCopyData());
+    
+    tmp.add(dt * (1.0 - theta), forcing_terms_local);
+    system_rhs += tmp;
 
     system_matrix.copy_from(mass_matrix);
     system_matrix.add(theta * dt, laplace_matrix);

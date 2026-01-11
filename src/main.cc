@@ -71,7 +71,7 @@ static void declare_parameters(dealii::ParameterHandler &prm)
     prm.declare_entry("generate_mesh", "true",
                       dealii::Patterns::Bool(),
                       "Generate mesh internally (true) or load from file (false)");
-    prm.declare_entry("cells_per_direction", "10",
+    prm.declare_entry("cells_per_direction", "5",
                       dealii::Patterns::Integer(1),
                       "Number of cells per direction for generated mesh");
   }
@@ -142,7 +142,7 @@ static void declare_parameters(dealii::ParameterHandler &prm)
     prm.declare_entry("run_reference", "true",
                       dealii::Patterns::Bool(),
                       "Run high-resolution reference solver for L2 error computation");
-    prm.declare_entry("initial_time_step", "0.002",
+    prm.declare_entry("initial_time_step", "0.001",
                       dealii::Patterns::Double(0.0),
                       "Initial time step size");
     prm.declare_entry("base_refinement", "2",
@@ -160,7 +160,7 @@ static void declare_parameters(dealii::ParameterHandler &prm)
     prm.declare_entry("output_at_each_timestep", "false",
                       dealii::Patterns::Bool(),
                       "Output at each solver timestep (true for debugging, false for fixed time intervals)");
-    prm.declare_entry("output_time_interval", "0.002",
+    prm.declare_entry("output_time_interval", "0.001",
                       dealii::Patterns::Double(0.0),
                       "Time interval for VTK output when output_at_each_timestep is false");
   }
