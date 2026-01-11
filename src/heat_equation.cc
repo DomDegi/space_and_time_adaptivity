@@ -312,7 +312,7 @@ namespace Progetto
     const double dt_tolerance = 1e-14;
     if (std::abs(dt - last_assembled_dt) > dt_tolerance)
     {
-      preconditioner.initialize(system_matrix, 1.0);
+      preconditioner.initialize(system_matrix);
       last_assembled_dt = dt;
     }
 

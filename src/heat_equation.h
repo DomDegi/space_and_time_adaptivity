@@ -254,7 +254,7 @@ namespace Progetto
     std::string output_dir;
 
     RunStats stats;
-    PreconditionSSOR<SparseMatrix<double>> preconditioner;
+    PreconditionJacobi<SparseMatrix<double>> preconditioner;
 
     /// Vector of (time, filename) pairs for PVD master file generation
     std::vector<std::pair<double, std::string>> times_and_names;
