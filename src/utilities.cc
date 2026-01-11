@@ -56,8 +56,8 @@ double ask_double_default(const std::string &question, const double default_valu
 
     std::stringstream ss(line);
     double v;
-    // Check if parsing to double is successful
-    if (ss >> v)
+    // Check if parsing to double is successful and entire input was consumed
+    if ((ss >> v) && (ss.eof() || ss.peek() == EOF))
       return v;
 
     std::cout << "Invalid input. Please enter a number.\n";
@@ -78,7 +78,8 @@ unsigned int ask_uint_default(const std::string &question, const unsigned int de
     std::stringstream ss(line);
     int v;
     // Parse as int first to check for negative numbers, then cast
-    if ((ss >> v) && v >= 0)
+    // Also verify entire input was consumed
+    if ((ss >> v) && v >= 0 && (ss.eof() || ss.peek() == EOF))
       return static_cast<unsigned int>(v);
 
     std::cout << "Invalid input. Please enter a positive integer (or 0).\n";

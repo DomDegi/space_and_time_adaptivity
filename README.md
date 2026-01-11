@@ -66,73 +66,101 @@ Before compiling, ensure you are inside the container and have loaded the necess
     ```bash
     ./heat-equation
     ```
+    Or specify a custom parameter file:
+    ```bash
+    ./heat-equation my_parameters.prm
+    ```
     *(Note: The `solutions` directory will be created automatically by the program).*
 
 ---
 
 ## Usage & Configuration
 
-Upon running `./heat-equation`, the application will launch an interactive command-line interface (CLI). You will be prompted to configure the simulation in the following order:
+### Parameter File
 
-### 1. Mesh Generation
-* **Generate internal grid?**
-    * `y` (Yes): Generates a structured HyperCube grid internally. You will be asked for the number of **cells per direction** (e.g., 20).
-    * `n` (No): Loads an external mesh file (expected at `../mesh/mesh-input.msh`).
+The program uses a **parameter file** (`parameters.prm`) to configure all simulation settings. This approach is suitable for large-scale computing where jobs are submitted to schedulers, and allows easy modification without recompilation.
 
-### 2. Physical Parameters
-Set the parameters for the heat source and domain (corresponding to the equations above):
-* **Final Time ($T$):** The duration of the simulation (default: `0.5`).
-* **Source Width ($\sigma$):** The Gaussian width of the heat source (default: `0.5`).
-* **Source Center ($x_0, y_0$):** Coordinates of the source center (default: `0.5, 0.5`).
-* **Frequency ($N$):** The oscillation frequency of the source term (default: `5`).
-* **Magnitude ($A$):** The amplitude of the source oscillation (default: `5.0`).
+**On first run**, if no parameter file exists, the program will automatically create a default `parameters.prm` with all available options and documentation. Simply edit this file and run the program again.
 
-### 3. Material Properties (Coefficients)
-The program asks: *"Do you want to customize physical material coefficients?"*
-* **No:** Uses default unitary values ($\mu=1$, equivalent to $\rho=1, c_p=1, k=1$).
-* **Yes:** You can specify the actual physical properties. This generalizes the equation to the full heat transfer form:
+**Parameter file sections:**
+
+#### 1. Mesh Configuration
+```prm
+subsection Mesh
+  set generate_mesh = true          # Generate mesh internally or load from file
+  set cells_per_direction = 10      # Number of cells per direction (if generated)
+end
+```
+
+#### 2. Physical Parameters
+Set the parameters for the heat source and domain:
+```prm
+subsection Physical Parameters
+  set final_time = 0.5                    # Final simulation time T
+  set source_width_sigma = 0.5            # Gaussian width σ (must be positive)
+  set source_center_x = 0.5               # Source center x-coordinate
+  set source_center_y = 0.5               # Source center y-coordinate
+  set source_frequency_N = 5              # Oscillation frequency N
+  set oscillation_magnitude_A = 5.0       # Amplitude parameter A
+end
+```
+
+#### 3. Material Properties
+Configure the physical material coefficients:
+```prm
+subsection Material Properties
+  set density = 1.0                       # Density ρ [kg/m³] (must be positive)
+  set specific_heat = 1.0                 # Specific heat c_p [J/(kg·K)] (must be positive)
+  set thermal_conductivity = 1.0          # Thermal conductivity k [W/(m·K)] (must be positive)
+  set source_intensity = 1.0              # Source intensity Q [W/m³]
+end
+```
+
+This generalizes the equation to the full heat transfer form:
 
 $$
 \rho c_p \frac{\partial u}{\partial t} - \nabla \cdot (k \nabla u) = Q \cdot g(t)h(\mathbf{x})
 $$
 
-Where the user-defined parameters are:
-* **Density ($\rho$):** Mass density of the material [kg/m³].
-* **Specific Heat ($c_p$):** Heat capacity [J/(kg·K)].
-* **Thermal Conductivity ($k$):** Rate of heat transfer [W/(m·K)].
-* **Source Intensity ($Q$):** Maximum volumetric power density [W/m³].
-
-⚠️ **Important:** All material parameters ($\rho, c_p, k$) must be **strictly positive**.
+⚠️ **Important:** All material parameters (ρ, c_p, k) must be **strictly positive**.
 > Setting these values to zero or negative numbers will violate the **Symmetric Positive Definite (SPD)** property required by the Conjugate Gradient (CG) solver, causing immediate runtime errors (e.g., `NaN` residuals).
 
-### 4. Solver & Time Stepping (Optional)
-The program asks: *"Do you want to customize solver & time adaptivity settings?"*
-* **No:** Uses defaults ($\theta=0.5$ Crank-Nicolson, Tol=10^{-6}).
-* **Yes:** You can specify:
-    * **Theta ($\theta$):** Time integration scheme.
-        * `0.0`: Forward Euler (Explicit).
-        * `0.5`: Crank-Nicolson (Implicit, 2nd order, default).
-        * `1.0`: Backward Euler (Implicit, 1st order, stable).
-    * **Tolerance:** The error threshold for time-step adaptivity (default `1e-6`).
-    * **Min Time Step ($dt_{min}$):** The hard limit for the smallest allowed time step (default `1e-4`).
+#### 4. Solver Settings
+```prm
+subsection Solver Settings
+  set theta = 0.5                         # Time integration: 0=Explicit, 0.5=Crank-Nicolson, 1=Implicit
+  set time_step_tolerance = 1e-6          # Error threshold for adaptivity
+  set minimum_time_step = 1e-4            # Minimum allowed time step
+  set use_step_doubling = true            # Use step-doubling (true) or heuristic (false)
+end
+```
 
-### 5. Adaptivity Strategy
-* **Time Step Doubling:** You can choose between:
-    * `y`: **Step Doubling** (Runs two half-steps and compares with one full step to estimate error). More accurate but computationally heavier.
-    * `n`: **Heuristic** (Estimates error based on the change in the Right-Hand Side). Faster but less rigorous.
+#### 5. Simulation Control
+```prm
+subsection Simulation Control
+  set run_mode = 0                        # 0=Full comparison, 1-4=specific configurations
+  set run_reference = true                # Run high-resolution reference for L2 errors
+  set initial_time_step = 0.002           # Initial time step size
+  set base_refinement = 2                 # Base global refinement level
+  set pre_refinement_steps = 4            # Number of pre-refinement steps
+  set refine_every_n_steps = 5            # Refine mesh every N steps
+  set write_vtk = true                    # Write VTK output files
+end
+```
 
-### 6. Simulation Modes
-Finally, select which configuration(s) to run:
+**Simulation Modes:**
 
 | Mode | Description |
 | :--- | :--- |
-| **0** | **Full Comparison (Benchmark)**<br>Runs a High-Res Reference solution, then runs ALL 4 configurations below and saves a summary CSV comparing L2 errors and CPU time. |
-| **1** | **Fixed Space + Fixed Time**<br>Standard FEM on a uniform grid with constant $dt$. |
-| **2** | **Adaptive Space + Fixed Time**<br>Uses AMR (Kelly Error Estimator) but keeps $dt$ constant. |
-| **3** | **Fixed Space + Adaptive Time**<br>Uniform grid, but varies $dt$ based on temporal error. |
+| **0** | **Full Comparison (Benchmark)**<br>Runs a High-Res Reference solution, then runs ALL 4 configurations and saves a summary CSV. |
+| **1** | **Fixed Space + Fixed Time**<br>Standard FEM on a uniform grid with constant Δt. |
+| **2** | **Adaptive Space + Fixed Time**<br>Uses AMR (Kelly Error Estimator) but keeps Δt constant. |
+| **3** | **Fixed Space + Adaptive Time**<br>Uniform grid, but varies Δt based on temporal error. |
 | **4** | **Adaptive Space + Adaptive Time**<br>Full adaptivity in both space and time. |
 
-*Note: If you select modes 1-4, the program will ask if you want to run the **Reference Solver** first. This is required if you want to calculate and see the L2 Error in the output.*
+### Legacy Interactive Mode (Deprecated)
+
+Previous versions used an interactive CLI. This has been replaced with the parameter file approach for better reproducibility and scriptability. The interactive helper functions remain in `utilities.cc` for potential debugging use.
 
 ---
 

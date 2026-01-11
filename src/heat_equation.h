@@ -30,6 +30,56 @@ namespace Progetto
   using namespace dealii;
 
   /**
+   * @struct HeatEquationParameters
+   * @brief Parameter structure to configure HeatEquation solver.
+   */
+  struct HeatEquationParameters
+  {
+    // Run configuration
+    std::string run_name;
+    std::string output_dir;
+    bool use_space_adaptivity;
+    bool use_time_adaptivity;
+    bool use_step_doubling;
+
+    // Mesh configuration
+    bool generate_mesh;
+    int cells_per_direction;
+
+    // Physical parameters (source term)
+    unsigned int source_frequency_N;
+    double source_width_sigma;
+    double source_magnitude_a;
+    double source_center_x;
+    double source_center_y;
+
+    // Material properties
+    double density;              // rho [kg/m^3]
+    double specific_heat;        // c_p [J/(kg K)]
+    double thermal_conductivity; // k [W/(m K)]
+    double source_intensity;     // Q [W/m^3]
+
+    // Solver settings
+    double theta;                // Time integration parameter
+    double time_step_tolerance;
+    double time_step_min;
+
+    // Time stepping
+    double end_time;
+    double initial_time_step;
+
+    // Refinement settings
+    unsigned int initial_global_refinement;
+    unsigned int n_adaptive_pre_refinement_steps;
+    unsigned int refine_every_n_steps;
+
+    // Output settings
+    bool write_vtk;
+    bool output_at_each_timestep;
+    double output_time_interval;
+  };
+
+  /**
    * @class HeatEquation
    * @brief Main class for solving the time-dependent Heat Equation.
    *
@@ -76,35 +126,9 @@ namespace Progetto
     };
 
     /**
-     * @brief Constructor initializing all simulation parameters including physical properties.
+     * @brief Constructor initializing all simulation parameters.
      */
-    HeatEquation(const std::string &run_name_in,
-                 const std::string &output_dir_in,
-                 bool space_adaptivity,
-                 bool time_adaptivity,
-                 bool step_doubling,
-                 bool mesh,
-                 int  cells_per_direction,
-                 unsigned int rhs_N_in,
-                 double rhs_sigma_in,
-                 double rhs_a_in,
-                 double rhs_x0_x_in,
-                 double rhs_x0_y_in,
-                 // --- Physical Parameters ---
-                 double density_in,              ///< rho
-                 double specific_heat_in,        ///< c_p
-                 double thermal_conductivity_in, ///< k
-                 double source_intensity_in,     ///< Q
-                 // ---------------------------
-                 double theta_in,
-                 double time_step_tolerance_in,
-                 double time_step_min_in,
-                 double end_time_in,
-                 double initial_dt_in,
-                 unsigned int initial_global_refinement_in,
-                 unsigned int n_adaptive_pre_refinement_steps_in,
-                 unsigned int refine_every_n_steps_in,
-                 bool write_vtk_in);
+    HeatEquation(const HeatEquationParameters &params);
 
     /**
      * @brief Main driver function.
@@ -126,10 +150,40 @@ namespace Progetto
                       const double          t_new,
                       Vector<double> &      u_out);
 
-    void output_results() const;
+    void output_results();
+
+    bool should_write_output() const;
 
     void refine_mesh(const unsigned int min_grid_level,
                      const unsigned int max_grid_level);
+
+    /**
+     * @brief Solve one time step using step doubling for adaptivity.
+     * 
+     * Performs three solves (one full step, two half steps), computes error,
+     * and decides whether to accept/reject the step and how to adjust dt.
+     * Updates time, timestep_number, solution, and time_step on acceptance.
+     * 
+     * @return true if step was accepted, false if rejected
+     */
+    bool solve_timestep_doubling();
+
+    /**
+     * @brief Solve one time step using RHS-based heuristic adaptivity.
+     * 
+     * Estimates error from change in RHS between old and new time,
+     * solves the time step, and adjusts dt based on heuristic rules.
+     * Always accepts the step and updates time, timestep_number, solution.
+     */
+    void solve_timestep_heuristic();
+
+    /**
+     * @brief Perform adaptive mesh refinement if conditions are met.
+     * 
+     * Checks if it's time to refine (based on timestep_number and refine_every_n_steps),
+     * and if space adaptivity is enabled. If so, calls refine_mesh() and updates stats.
+     */
+    void adapt_mesh();
 
     void log_mesh_event(const unsigned int marked_refine,
                         const unsigned int marked_coarsen) const;
@@ -157,6 +211,7 @@ namespace Progetto
 
     double       time = 0.0;
     double       time_step;
+    double       last_assembled_dt = -1.0; ///< Track last dt for which matrix was assembled
     unsigned int timestep_number = 0;
 
     // --- Configuration Flags ---
@@ -191,12 +246,18 @@ namespace Progetto
     unsigned int refine_every_n_steps;
 
     bool write_vtk;
+    bool output_at_each_timestep;  ///< Output at each timestep (debugging) or at fixed intervals
+    double output_time_interval;   ///< Time interval for output when not outputting each timestep
+    double last_output_time = 0.0; ///< Track last time output was written
 
     std::string run_name;
     std::string output_dir;
 
     RunStats stats;
     PreconditionSSOR<SparseMatrix<double>> preconditioner;
+
+    /// Vector of (time, filename) pairs for PVD master file generation
+    std::vector<std::pair<double, std::string>> times_and_names;
   };
 }
 

@@ -18,6 +18,7 @@
 #include <deal.II/numerics/matrix_creator.h>
 #include <deal.II/numerics/matrix_tools.h>
 #include <deal.II/lac/solver_cg.h>
+#include <deal.II/lac/solver_control.h>
 
 #include <iostream>
 #include <fstream>
@@ -90,68 +91,39 @@ namespace Progetto
   // ==========================================================================
 
   template <int dim>
-  HeatEquation<dim>::HeatEquation(const std::string &run_name_in,
-                                  const std::string &output_dir_in,
-                                  bool space_adaptivity,
-                                  bool time_adaptivity,
-                                  bool step_doubling,
-                                  bool mesh,
-                                  int  cells_per_direction_in,
-                                  unsigned int rhs_N_in,
-                                  double rhs_sigma_in,
-                                  double rhs_a_in,
-                                  double rhs_x0_x_in,
-                                  double rhs_x0_y_in,
-                                  double density_in,
-                                  double specific_heat_in,
-                                  double thermal_conductivity_in,
-                                  double source_intensity_in,
-                                  double theta_in,
-                                  double time_step_tolerance_in,
-                                  double time_step_min_in,
-                                  double end_time_in,
-                                  double initial_dt_in,
-                                  unsigned int initial_global_refinement_in,
-                                  unsigned int n_adaptive_pre_refinement_steps_in,
-                                  unsigned int refine_every_n_steps_in,
-                                  bool write_vtk_in)
+  HeatEquation<dim>::HeatEquation(const HeatEquationParameters &params)
     : fe(1)
     , dof_handler(triangulation)
-    , theta(theta_in)
+    , time_step(params.initial_time_step)
+    , use_space_adaptivity(params.use_space_adaptivity)
+    , use_time_adaptivity(params.use_time_adaptivity)
+    , use_step_doubling(params.use_step_doubling)
+    , time_step_tolerance(params.time_step_tolerance)
+    , time_step_min(params.time_step_min)
+    , theta(params.theta)
+    , density(params.density)
+    , specific_heat(params.specific_heat)
+    , thermal_conductivity(params.thermal_conductivity)
+    , source_intensity(params.source_intensity)
+    , use_mesh(params.generate_mesh)
+    , cells_per_direction(params.cells_per_direction)
+    , rhs_N(params.source_frequency_N)
+    , rhs_sigma(params.source_width_sigma)
+    , rhs_a(params.source_magnitude_a)
+    , end_time(params.end_time)
+    , initial_global_refinement(params.initial_global_refinement)
+    , n_adaptive_pre_refinement_steps(params.n_adaptive_pre_refinement_steps)
+    , refine_every_n_steps(params.refine_every_n_steps)
+    , write_vtk(params.write_vtk)
+    , output_at_each_timestep(params.output_at_each_timestep)
+    , output_time_interval(params.output_time_interval)
+    , run_name(params.run_name)
+    , output_dir(params.output_dir)
   {
-    run_name = run_name_in;
-    output_dir = output_dir_in;
-
-    use_space_adaptivity = space_adaptivity;
-    use_time_adaptivity  = time_adaptivity;
-    use_step_doubling    = step_doubling;
-
-    use_mesh = mesh;
-    cells_per_direction = cells_per_direction_in;
-
-    rhs_N = rhs_N_in;
-    rhs_sigma = rhs_sigma_in;
-    rhs_a     = rhs_a_in;
-    rhs_x0[0] = rhs_x0_x_in;
-    rhs_x0[1] = rhs_x0_y_in;
-
-    // --- Physical Parameters Initialization ---
-    density = density_in;
-    specific_heat = specific_heat_in;
-    thermal_conductivity = thermal_conductivity_in;
-    source_intensity = source_intensity_in;
-
-    time_step_tolerance = time_step_tolerance_in;
-    time_step_min       = time_step_min_in;
-
-    end_time = end_time_in;
-    time_step = initial_dt_in;
-
-    initial_global_refinement = initial_global_refinement_in;
-    n_adaptive_pre_refinement_steps = n_adaptive_pre_refinement_steps_in;
-    refine_every_n_steps = refine_every_n_steps_in;
-
-    write_vtk = write_vtk_in;
+    // Initialize last_output_time to negative interval so first output at t=0 will be written
+    last_output_time = -output_time_interval;
+    rhs_x0[0] = params.source_center_x;
+    rhs_x0[1] = params.source_center_y;
   }
 
   template <int dim>
@@ -189,18 +161,17 @@ namespace Progetto
     solution.reinit(dof_handler.n_dofs());
     old_solution.reinit(dof_handler.n_dofs());
     system_rhs.reinit(dof_handler.n_dofs());
+
+    // So that the preconditioner is initialized on first use
+    last_assembled_dt = -1.0;
   }
 
   template <int dim>
   void HeatEquation<dim>::solve_time_step()
   {
-    const double rhs_norm = system_rhs.l2_norm();
-    const double tol = std::max(1e-14, 1e-8 * rhs_norm);
-
-    SolverControl            solver_control(1000, tol);
+    ReductionControl         solver_control(1000, 1e-14, 1e-8);
     SolverCG<Vector<double>> cg(solver_control);
 
-    preconditioner.initialize(system_matrix, 1.0);
     cg.solve(system_matrix, solution, system_rhs, preconditioner);
 
     constraints.distribute(solution);
@@ -243,13 +214,21 @@ namespace Progetto
 
     constraints.condense(system_matrix, system_rhs);
 
+    // Only reinitialize preconditioner when the matrix changes (i.e., when dt changes)
+    const double dt_tolerance = 1e-14;
+    if (std::abs(dt - last_assembled_dt) > dt_tolerance)
+    {
+      preconditioner.initialize(system_matrix, 1.0);
+      last_assembled_dt = dt;
+    }
+
     solve_time_step();
 
     u_out = solution;
   }
 
   template <int dim>
-  void HeatEquation<dim>::output_results() const
+  void HeatEquation<dim>::output_results()
   {
     std::filesystem::create_directories(output_dir);
 
@@ -260,9 +239,22 @@ namespace Progetto
 
     data_out.set_flags(DataOutBase::VtkFlags(time, timestep_number));
 
-    const std::string filename = "solution-" + Utilities::int_to_string(timestep_number, 6) + ".vtk";
+    // Use VTU format (compressed, binary) instead of VTK
+    const std::string filename = "solution-" + Utilities::int_to_string(timestep_number, 6) + ".vtu";
     std::ofstream output(output_dir + "/" + filename);
-    data_out.write_vtk(output);
+    data_out.write_vtu(output);
+
+    // Record time and filename for PVD master file
+    times_and_names.push_back({time, filename});
+  }
+
+  template <int dim>
+  bool HeatEquation<dim>::should_write_output() const
+  {
+    if (output_at_each_timestep)
+      return true;
+    // Write if we've crossed an output time interval
+    return (time - last_output_time) >= (output_time_interval - 1e-10);
   }
 
   template <int dim>
@@ -372,6 +364,139 @@ namespace Progetto
   }
 
   template <int dim>
+  bool HeatEquation<dim>::solve_timestep_doubling()
+  {
+    const unsigned int p = 2;
+    double dt = std::min(time_step, end_time - time);
+    
+    // Perform three solves: one full step, two half steps
+    Vector<double> u_one(solution.size());
+    Vector<double> u_two(solution.size());
+    const double t_one = time + dt;
+
+    do_time_step(old_solution, dt, t_one, u_one);
+    
+    const double dt2 = 0.5 * dt;
+    Vector<double> u_half(solution.size());
+    do_time_step(old_solution, dt2, time + dt2, u_half);
+    do_time_step(u_half, dt2, t_one, u_two);
+
+    // Compute error estimate
+    Vector<double> diff(u_two);
+    diff -= u_one;
+    const double error = diff.l2_norm();
+    const double sol_norm = std::max(1.0, u_two.l2_norm());
+    const double tol_scaled = time_step_tolerance * sol_norm + 1e-16;
+    const bool hit_min_dt = (dt <= time_step_min * 1.000001);
+
+    // Decide acceptance
+    if (error <= tol_scaled || hit_min_dt)
+    {
+      // Accept step
+      time = t_one;
+      ++timestep_number;
+      solution = u_two;
+      old_solution = solution;
+
+      if (hit_min_dt && error > tol_scaled)
+      {
+        std::cout << "\n   !!! FORCED ACCEPTANCE AT MIN_DT !!!\n"
+                  << "   Time: " << time << " | Step: " << dt << " | Error: " << error << "\n";
+      }
+      else
+      {
+        std::cout << "[" << run_name << "] Time step " << timestep_number
+                  << " accepted at t=" << time << "  dt=" << dt << "  error=" << error << "\n";
+      }
+
+      stats.register_time_step_attempt(dt, true);
+      stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
+
+      // Adjust time step for next iteration
+      double err_ratio = (error > 0.0) ? (time_step_tolerance * sol_norm / error) : 1e6;
+      double dt_new = dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
+      dt_new = std::min(std::max(dt_new, time_step_min), time_step_max);
+      time_step = dt_new;
+      log_time_event(time, dt, 1, error, time_step);
+      
+      return true;
+    }
+    else
+    {
+      // Reject step and reduce time step
+      double err_ratio = (error > 0.0) ? (time_step_tolerance * sol_norm / error) : 1e6;
+      double dt_new = dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
+      dt_new = std::max(dt_new, time_step_min);
+      time_step = dt_new;
+      std::cout << "[" << run_name << "] Rejected at t=" << time << " dt=" << dt << " err=" << error << " new_dt=" << time_step << "\n";
+      stats.register_time_step_attempt(dt, false);
+      log_time_event(time, dt, 0, error, time_step);
+      
+      return false;
+    }
+  }
+
+  template <int dim>
+  void HeatEquation<dim>::solve_timestep_heuristic()
+  {
+    double dt = std::min(time_step, end_time - time);
+    const double t_new = time + dt;
+    
+    // Estimate error from RHS change
+    Vector<double> rhs_new(solution.size());
+    RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_a, rhs_x0, source_intensity);
+    rhs_function.set_time(t_new);
+    VectorTools::create_right_hand_side(dof_handler, QGauss<dim>(fe.degree + 1), rhs_function, rhs_new);
+
+    Vector<double> rhs_old(solution.size());
+    rhs_function.set_time(time);
+    VectorTools::create_right_hand_side(dof_handler, QGauss<dim>(fe.degree + 1), rhs_function, rhs_old);
+
+    Vector<double> rhs_diff = rhs_new;
+    rhs_diff -= rhs_old;
+    const double rhs_diff_norm = rhs_diff.l2_norm();
+    const double rhs_norm = std::max(1.0, rhs_new.l2_norm());
+    const double error_est = dt * rhs_diff_norm / rhs_norm;
+    const double tol = time_step_tolerance;
+
+    // Solve the time step (always accepted)
+    Vector<double> u_new(solution.size());
+    do_time_step(old_solution, dt, t_new, u_new);
+
+    time = t_new;
+    ++timestep_number;
+    solution = u_new;
+    old_solution = solution;
+
+    std::cout << "[" << run_name << "] Heuristic step " << timestep_number 
+              << " at t=" << time << " dt=" << dt << " err_est=" << error_est << "\n";
+    stats.register_time_step_attempt(dt, true);
+    stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
+
+    // Adjust time step for next iteration based on heuristic rules
+    double factor = 1.0;
+    if (error_est > 2.0 * tol) 
+      factor = 0.5;
+    else if (error_est < 0.25 * tol) 
+      factor = 2.0;
+
+    double dt_new = dt * factor * time_step_safety;
+    dt_new = std::min(std::max(dt_new, time_step_min), time_step_max);
+    time_step = dt_new;
+    log_time_event(time, dt, 1, error_est, time_step);
+  }
+
+  template <int dim>
+  void HeatEquation<dim>::adapt_mesh()
+  {
+    if ((timestep_number % refine_every_n_steps == 0) && use_space_adaptivity)
+    {
+      refine_mesh(initial_global_refinement, initial_global_refinement + n_adaptive_pre_refinement_steps);
+      stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
+    }
+  }
+
+  template <int dim>
   void HeatEquation<dim>::run()
   {
     stats.reset();
@@ -422,8 +547,10 @@ namespace Progetto
 
     const double eps = 1e-12;
 
+    // Main time-stepping loop
     if (!use_time_adaptivity)
     {
+      // Fixed time step mode
       while (time < end_time - eps)
       {
         const double dt = std::min(time_step, end_time - time);
@@ -433,6 +560,7 @@ namespace Progetto
         std::cout << "[" << run_name << "] Time step " << timestep_number
                   << " at t=" << t_new << "  dt=" << dt << "\n";
 
+        // Solve the time step
         Vector<double> u_new(solution.size());
         do_time_step(old_solution, dt, t_new, u_new);
 
@@ -443,134 +571,54 @@ namespace Progetto
         stats.register_time_step_attempt(dt, true);
         stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
 
-        if (write_vtk) output_results();
-
-        if ((timestep_number % refine_every_n_steps == 0) && use_space_adaptivity)
+        // Output if needed
+        if (write_vtk && should_write_output())
         {
-          refine_mesh(initial_global_refinement, initial_global_refinement + n_adaptive_pre_refinement_steps);
-          stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
+          output_results();
+          last_output_time = time;
         }
+
+        // Adapt mesh if needed
+        adapt_mesh();
       }
     }
     else
     {
-      const unsigned int p = 2;
+      // Adaptive time stepping mode
       while (time < end_time - eps)
       {
-        double dt = std::min(time_step, end_time - time);
-
         if (use_step_doubling)
         {
-          Vector<double> u_one(solution.size());
-          Vector<double> u_two(solution.size());
-          const double t_one = time + dt;
-
-          do_time_step(old_solution, dt, t_one, u_one);
-          const double dt2 = 0.5 * dt;
-          Vector<double> u_half(solution.size());
-          do_time_step(old_solution, dt2, time + dt2, u_half);
-          do_time_step(u_half, dt2, t_one, u_two);
-
-          Vector<double> diff(u_two);
-          diff -= u_one;
-          const double error = diff.l2_norm();
-          const double sol_norm = std::max(1.0, u_two.l2_norm());
-          const double tol_scaled = time_step_tolerance * sol_norm + 1e-16;
-          const bool hit_min_dt = (dt <= time_step_min * 1.000001);
-
-          if (error <= tol_scaled || hit_min_dt)
+          // Step doubling adaptivity
+          bool accepted = solve_timestep_doubling();
+          
+          if (accepted)
           {
-            time = t_one;
-            ++timestep_number;
-            solution = u_two;
-            old_solution = solution;
-
-            if (hit_min_dt && error > tol_scaled)
+            // Output if needed
+            if (write_vtk && should_write_output())
             {
-              std::cout << "\n   !!! FORCED ACCEPTANCE AT MIN_DT !!!\n"
-                        << "   Time: " << time << " | Step: " << dt << " | Error: " << error << "\n";
-            }
-            else
-            {
-              std::cout << "[" << run_name << "] Time step " << timestep_number
-                        << " accepted at t=" << time << "  dt=" << dt << "  error=" << error << "\n";
+              output_results();
+              last_output_time = time;
             }
 
-            stats.register_time_step_attempt(dt, true);
-            stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
-            if (write_vtk) output_results();
-
-            if ((timestep_number % refine_every_n_steps == 0) && use_space_adaptivity)
-            {
-              refine_mesh(initial_global_refinement, initial_global_refinement + n_adaptive_pre_refinement_steps);
-              stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
-            }
-
-            double err_ratio = (error > 0.0) ? (time_step_tolerance * sol_norm / error) : 1e6;
-            double dt_new = dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
-            dt_new = std::min(std::max(dt_new, time_step_min), time_step_max);
-            time_step = dt_new;
-            log_time_event(time, dt, 1, error, time_step);
-          }
-          else
-          {
-            double err_ratio = (error > 0.0) ? (time_step_tolerance * sol_norm / error) : 1e6;
-            double dt_new = dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
-            dt_new = std::max(dt_new, time_step_min);
-            time_step = dt_new;
-            std::cout << "[" << run_name << "] Rejected at t=" << time << " dt=" << dt << " err=" << error << " new_dt=" << time_step << "\n";
-            stats.register_time_step_attempt(dt, false);
-            log_time_event(time, dt, 0, error, time_step);
+            // Adapt mesh if needed
+            adapt_mesh();
           }
         }
         else
         {
-          // Heuristic adaptivity logic
-          const double t_new = time + dt;
-          Vector<double> rhs_new(solution.size());
-          // Updated: Pass source_intensity (Q)
-          RightHandSide<dim> rhs_function(rhs_N, rhs_sigma, rhs_a, rhs_x0, source_intensity);
-          rhs_function.set_time(t_new);
-          VectorTools::create_right_hand_side(dof_handler, QGauss<dim>(fe.degree + 1), rhs_function, rhs_new);
+          // Heuristic adaptivity
+          solve_timestep_heuristic();
 
-          Vector<double> rhs_old(solution.size());
-          rhs_function.set_time(time);
-          VectorTools::create_right_hand_side(dof_handler, QGauss<dim>(fe.degree + 1), rhs_function, rhs_old);
-
-          Vector<double> rhs_diff = rhs_new;
-          rhs_diff -= rhs_old;
-          const double rhs_diff_norm = rhs_diff.l2_norm();
-          const double rhs_norm = std::max(1.0, rhs_new.l2_norm());
-          const double error_est = dt * rhs_diff_norm / rhs_norm;
-          const double tol = time_step_tolerance;
-
-          Vector<double> u_new(solution.size());
-          do_time_step(old_solution, dt, t_new, u_new);
-
-          time = t_new;
-          ++timestep_number;
-          solution = u_new;
-          old_solution = solution;
-
-          std::cout << "[" << run_name << "] Heuristic step " << timestep_number << " at t=" << time << " dt=" << dt << " err_est=" << error_est << "\n";
-          stats.register_time_step_attempt(dt, true);
-          stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
-          if (write_vtk) output_results();
-
-          if ((timestep_number % refine_every_n_steps == 0) && use_space_adaptivity)
+          // Output if needed
+          if (write_vtk && should_write_output())
           {
-            refine_mesh(initial_global_refinement, initial_global_refinement + n_adaptive_pre_refinement_steps);
-            stats.sample_dofs_and_cells(dof_handler.n_dofs(), triangulation.n_active_cells());
+            output_results();
+            last_output_time = time;
           }
 
-          double factor = 1.0;
-          if (error_est > 2.0 * tol) factor = 0.5;
-          else if (error_est < 0.25 * tol) factor = 2.0;
-
-          double dt_new = dt * factor * time_step_safety;
-          dt_new = std::min(std::max(dt_new, time_step_min), time_step_max);
-          time_step = dt_new;
-          log_time_event(time, dt, 1, error_est, time_step);
+          // Adapt mesh if needed
+          adapt_mesh();
         }
       }
     }
@@ -578,6 +626,14 @@ namespace Progetto
     const auto t_end = std::chrono::steady_clock::now();
     stats.cpu_seconds_total = std::chrono::duration_cast<std::chrono::duration<double>>(t_end - t_start).count();
     std::cout << "[" << run_name << "] DONE. CPU seconds = " << stats.cpu_seconds_total << "\n";
+
+    // Write PVD master file that links all timesteps to their physical times
+    if (write_vtk && !times_and_names.empty())
+    {
+      std::ofstream pvd_output(output_dir + "/solution.pvd");
+      DataOutBase::write_pvd_record(pvd_output, times_and_names);
+      std::cout << "[" << run_name << "] PVD master file written to " << output_dir << "/solution.pvd\n";
+    }
   }
 
   // Explicit Instantiation for 2D
