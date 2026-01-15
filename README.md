@@ -139,7 +139,42 @@ subsection Solver Settings
 end
 ```
 
-#### 5. Simulation Control
+#### 4. Solver Settings
+```prm
+subsection Solver Settings
+  set theta = 0.5                         # Time integration: 0=Explicit, 0.5=Crank-Nicolson, 1=Implicit
+  set time_step_tolerance = 1e-6          # Error threshold for adaptivity
+  set minimum_time_step = 1e-4            # Minimum allowed time step
+  set time_adaptivity_method = step_doubling # "step_doubling" or "heuristic"
+  set time_step_controller = pi           # "integral" or "pi" (for step doubling)
+  set enable_rannacher_smoothing = true   # Use Implicit Euler for first few steps (true/false)
+end
+```
+
+### 5. Time Adaptivity Methods
+
+The solver supports advanced time stepping strategies to ensure stability and accuracy.
+
+#### Step Doubling (Richardson Extrapolation)
+Uses three solves per step to estimate local truncation error: one step of size $\Delta t$ and two steps of size $\Delta t/2$.
+Error estimate $e$:
+$$ e \approx \frac{\|u_{\Delta t} - u_{\Delta t/2}\|}{2^p - 1} $$
+
+#### Time Step Controllers
+Once the error $e$ is estimated, the next time step $h_{new}$ is calculated:
+
+1.  **Integral Controller (Standard):**
+    $$ h_{new} = h_{old} \times \left( \frac{\text{TOL}}{e} \right)^{\frac{1}{p+1}} $$
+    Simple but can lead to oscillations in step size.
+
+2.  **PI Controller (Gustafsson et al.):**
+    State-of-the-art controller that uses error history to smooth step size changes.
+    $$ h_{new} = h_{old} \times \left( \frac{\text{TOL}}{e_n} \right)^{k_I} \times \left( \frac{e_{n-1}}{e_n} \right)^{k_P} $$
+    Where $e_n$ is current error, $e_{n-1}$ is previous error. Reduces step rejection rates.
+
+#### Rannacher Smoothing
+When using the Crank-Nicolson scheme ($\theta=0.5$), rough initial data can cause spurious oscillations.
+**Rannacher Smoothing** replaces Crank-Nicolson with Implicit Euler ($\theta=1.0$) for the first few time steps (typically 2-4). Implicit Euler is L-stable and effectively damps out high-frequency stiff modes, restoring accuracy for the subsequent Crank-Nicolson steps.
 ```prm
 subsection Simulation Control
   set run_mode = 0                        # 0=Full comparison, 1-4=specific configurations

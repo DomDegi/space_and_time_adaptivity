@@ -121,11 +121,11 @@ declare_parameters(dealii::ParameterHandler &prm)
     prm.declare_entry("time_adaptivity_method", "step_doubling",
                       dealii::Patterns::Selection("step_doubling|heuristic"),
                       "Method for adaptive time stepping");
-    prm.declare_entry("time_step_controller", "integral",
+    prm.declare_entry("time_step_controller", "pi",
                       dealii::Patterns::Selection("integral|pi"),
                       "Controller type for step doubling (integral or pi)");
     prm.declare_entry(
-      "enable_rannacher_smoothing", "false", dealii::Patterns::Bool(),
+      "enable_rannacher_smoothing", "true", dealii::Patterns::Bool(),
       "Enable Rannacher smoothing (Implicit Euler for first few steps)");
   }
   prm.leave_subsection();
