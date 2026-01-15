@@ -42,7 +42,7 @@ Before compiling, ensure you are inside the container and have loaded the necess
 
 1.  **Clone the repository** (if you haven't already):
     ```bash
-    git clone [https://github.com/DomDegi/space_and_time_adaptivity.git](https://github.com/DomDegi/space_and_time_adaptivity)
+    git clone https://github.com/DomDegi/space_and_time_adaptivity.git
     cd space_and_time_adaptivity/
     ```
 
@@ -62,19 +62,19 @@ Before compiling, ensure you are inside the container and have loaded the necess
     make
     ```
 
-5.  **Run the program:**
+5.  **Run the program (MPI):**
+    For parallel execution, use `mpirun`.
+    
     ```bash
-    ./heat-equation
-    ```
-    Or with MPI (parallel execution):
-    ```bash
-    mpirun -np 4 ./heat-equation
+    # Example: Run on 4 processes
+    mpirun -n 4 ./heat_equation
     ```
     
-    **Note on L2 Error Computation:**
-    - **Serial mode** (1 process): L2 errors are computed against reference solution
-    - **Parallel mode** (>1 process): Reference solver is disabled (too slow). L2 errors will be NaN
-    - To compute L2 errors with MPI, run with 1 process: `mpirun -np 1 ./heat-equation`
+    Or specify a custom parameter file:
+    ```bash
+    mpirun -n 4 ./heat_equation my_parameters.prm
+    ```
+    *(Note: The `solutions` directory will be created automatically by the program).*
 
 ---
 
@@ -84,7 +84,7 @@ Before compiling, ensure you are inside the container and have loaded the necess
 
 The program uses a **parameter file** (`parameters.prm`) to configure all simulation settings. This approach is suitable for large-scale computing where jobs are submitted to schedulers, and allows easy modification without recompilation.
 
-**On first run**, if no parameter file exists, the program will automatically create a default `parameters.prm` with all available options and documentation. Simply edit this file and run the program again.
+**On first run**, if no parameter file exists, Rank 0 will automatically create a default `parameters.prm` with all available options and documentation. Simply edit this file and run the program again.
 
 **Parameter file sections:**
 
@@ -162,22 +162,14 @@ end
 | **3** | **Fixed Space + Adaptive Time**<br>Uniform grid, but varies Δt based on temporal error. |
 | **4** | **Adaptive Space + Adaptive Time**<br>Full adaptivity in both space and time. |
 
-### Legacy Interactive Mode (Deprecated)
-
-Previous versions used an interactive CLI. This has been replaced with the parameter file approach for better reproducibility and scriptability. The interactive helper functions remain in `utilities.cc` for potential debugging use.
-
 ---
 
 ## Output
 
-Results are saved in the `build/solutions/` directory:
-* **VTK Files (Serial):** `solution-00001.vtu`, etc. (single-process execution)
-  * Open directly with Paraview or VisIt
-* **Parallel VTK Files:** `solution-00001.pvtu` (multi-process execution with MPI)
-  * **Important:** Always open the `.pvtu` file, not the `.vtu` files—Paraview automatically loads the distributed partitions
-  * The `.pvtu` file is a metadata file that references the `.vtu` files for each process
+Results are saved in the `solutions/` directory:
+* **VTK Files:** `solutions/<run_name>/solution-00001.pvtu`, etc. (Open with Paraview using the `.pvd` or `.pvtu` files).
 * **CSV Logs:** `time_log.csv` (step sizes) and `mesh_log.csv` (DoF counts).
-* **Summary:** `summary_comparison.csv` (created in Mode 0 for performance analysis).
+* **Summary:** `solutions/summary_comparison.csv` (created in Mode 0 for performance analysis).
 
 ---
 
@@ -190,4 +182,4 @@ Since Doxygen is already available in the container, simply run the following co
 ```bash
 doxygen Doxyfile
 ```
-You can view the documentation by opening the index.html file located in docs/html/ inside your browser.
+You can view the documentation by opening the `docs/html/index.html` file inside your browser.
