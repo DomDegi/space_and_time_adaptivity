@@ -208,8 +208,7 @@ HeatEquation<dim>::solve_time_step()
   SolverCG<TrilinosWrappers::MPI::Vector> cg(solver_control);
 
   // Algebraic Multigrid (AMG) Preconditioner (Trilinos ML/MueLu)
-  // Configured for Elliptic problems (Heat eq. LHS is Mass + dt*Laplace, which
-  // is elliptic)
+
   TrilinosWrappers::PreconditionAMG                 preconditioner;
   TrilinosWrappers::PreconditionAMG::AdditionalData data;
   data.elliptic = true;
