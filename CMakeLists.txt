@@ -20,10 +20,6 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
   add_definitions(-DBUILD_TYPE_DEBUG)
 endif()
 
-# MPI Configuration
-find_package(MPI REQUIRED)
-set(CMAKE_CXX_COMPILER "${MPI_CXX_COMPILER}")
-
 # Boost Configuration
 # HINTS is essential on clusters to find libraries in module paths
 find_package(Boost 1.72.0 REQUIRED
@@ -42,6 +38,8 @@ deal_ii_initialize_cached_variables()
 # Compiler Flags
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wfloat-conversion -Wmissing-braces -Wnon-virtual-dtor")
 
+add_compile_definitions(OMPI_SKIP_MPICXX MPICH_SKIP_MPICXX)
+
 # ==============================================================================
 #  PROJECT TARGETS
 # ==============================================================================
@@ -53,3 +51,4 @@ add_executable(heat-equation
 )
 
 deal_ii_setup_target(heat-equation)
+
