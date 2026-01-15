@@ -54,7 +54,9 @@ struct HeatEquationParameters
   std::string output_dir;
   bool        use_space_adaptivity;
   bool        use_time_adaptivity;
-  bool        use_step_doubling;
+  std::string time_adaptivity_method; // "step_doubling" or "heuristic"
+  std::string time_step_controller;   // "integral" or "pi"
+  bool        use_rannacher_smoothing;
 
   // Mesh configuration
   bool generate_mesh;
@@ -306,6 +308,19 @@ private:
                       const int accepted, const double err_est,
                       const double new_dt) const;
 
+  /**
+   * @brief Helper to compute new time step using Integral controller.
+   */
+  double compute_new_step_integral(const double error, const double sol_norm,
+                                   const double       current_dt,
+                                   const unsigned int p);
+
+  /**
+   * @brief Helper to compute new time step using PI controller (Gustafsson).
+   */
+  double compute_new_step_pi(const double error, const double sol_norm,
+                             const double current_dt, const unsigned int p);
+
   // --- DEAL.II Objects (Parallel) ---
   MPI_Comm           mpi_communicator;
   ConditionalOStream pcout;
@@ -338,16 +353,21 @@ private:
     -1.0; ///< Track last dt for which matrix was assembled
   unsigned int timestep_number = 0;
 
-  // --- Configuration Flags ---
-  bool use_space_adaptivity;
-  bool use_time_adaptivity;
-  bool use_step_doubling;
+  // PI Controller state
+  double previous_error = -1.0; ///< Error from previous step for PI controller
 
-  double       time_step_tolerance;
-  double       time_step_min;
-  double       time_step_max = 1e-1;
-  double       time_step_safety = 0.9;
-  const double theta;
+  // --- Configuration Flags ---
+  bool        use_space_adaptivity;
+  bool        use_time_adaptivity;
+  std::string time_adaptivity_method;
+  std::string time_step_controller;
+  bool        use_rannacher_smoothing;
+
+  double time_step_tolerance;
+  double time_step_min;
+  double time_step_max = 1e-1;
+  double time_step_safety = 0.9;
+  double theta;
 
   // --- Physical Parameters ---
   double density;              ///< rho [kg/m^3]

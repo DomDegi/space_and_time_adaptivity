@@ -118,9 +118,15 @@ declare_parameters(dealii::ParameterHandler &prm)
     prm.declare_entry("minimum_time_step", "1e-4",
                       dealii::Patterns::Double(0.0),
                       "Minimum allowed time step");
-    prm.declare_entry("use_step_doubling", "true", dealii::Patterns::Bool(),
-                      "Use step-doubling for time adaptivity (true) or simple "
-                      "heuristic (false)");
+    prm.declare_entry("time_adaptivity_method", "step_doubling",
+                      dealii::Patterns::Selection("step_doubling|heuristic"),
+                      "Method for adaptive time stepping");
+    prm.declare_entry("time_step_controller", "integral",
+                      dealii::Patterns::Selection("integral|pi"),
+                      "Controller type for step doubling (integral or pi)");
+    prm.declare_entry(
+      "enable_rannacher_smoothing", "false", dealii::Patterns::Bool(),
+      "Enable Rannacher smoothing (Implicit Euler for first few steps)");
   }
   prm.leave_subsection();
 
@@ -175,6 +181,7 @@ main(int argc, char *argv[])
       declare_parameters(prm);
 
       // Check if parameter file exists (only Rank 0 writes)
+      bool parameter_file_created = false;
       if(Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
         {
           if(!std::filesystem::exists(parameter_file))
@@ -188,15 +195,23 @@ main(int argc, char *argv[])
               std::cout << "Default parameter file created: " << parameter_file
                         << "\n";
               std::cout << "Please edit the file and run again.\n";
-              return 0;
+              parameter_file_created = true;
             }
-
-          // Read parameter file
-          std::cout << "Reading parameters from: " << parameter_file << "\n";
+          else
+            {
+              // Read parameter file
+              std::cout << "Reading parameters from: " << parameter_file
+                        << "\n";
+            }
         }
 
-      // Ensure all processes wait for file creation/reading before proceeding
-      MPI_Barrier(MPI_COMM_WORLD);
+      // Broadcast the status to all ranks
+      Utilities::MPI::broadcast(MPI_COMM_WORLD, parameter_file_created, 0);
+
+      if(parameter_file_created)
+        {
+          return 0; // All ranks exit together
+        }
 
       prm.parse_input(parameter_file);
 
@@ -268,10 +283,12 @@ main(int argc, char *argv[])
 
       // --- Read Solver Settings ---
       prm.enter_subsection("Solver Settings");
-      const double user_theta = prm.get_double("theta");
-      const double user_tol = prm.get_double("time_step_tolerance");
-      const double user_dt_min = prm.get_double("minimum_time_step");
-      const bool   time_step_doubling = prm.get_bool("use_step_doubling");
+      const double      user_theta = prm.get_double("theta");
+      const double      user_tol = prm.get_double("time_step_tolerance");
+      const double      user_dt_min = prm.get_double("minimum_time_step");
+      const std::string method = prm.get("time_adaptivity_method");
+      const std::string controller = prm.get("time_step_controller");
+      const bool        smoothing = prm.get_bool("enable_rannacher_smoothing");
       prm.leave_subsection();
 
       // Validate solver settings
@@ -329,8 +346,10 @@ main(int argc, char *argv[])
                     << ")\n"
                     << "  Time step tolerance: " << user_tol << "\n"
                     << "  Minimum time step: " << user_dt_min << "\n"
-                    << "  Step-doubling: "
-                    << (time_step_doubling ? "Yes" : "Heuristic") << "\n"
+                    << "  Adaptivity Method: " << method << "\n"
+                    << "  Controller: " << controller << "\n"
+                    << "  Rannacher Smoothing: "
+                    << (smoothing ? "Enabled" : "Disabled") << "\n"
                     << "\n[Simulation Control]\n"
                     << "  Run mode: " << run_mode << " ("
                     << (run_mode == 0   ? "Full Comparison"
@@ -356,8 +375,8 @@ main(int argc, char *argv[])
 
       const std::string summary_path = "solutions/summary_comparison.csv";
 
-      // Replicated Reference Strategy - Disabled for parallel execution (too
-      // slow) Check if running in parallel
+      // Replicated Reference Strategy - Enabled for parallel execution
+      // Check if running in parallel
       const unsigned int mpi_size =
         Utilities::MPI::n_mpi_processes(MPI_COMM_WORLD);
       if(run_reference && mpi_size > 1)
@@ -366,16 +385,12 @@ main(int argc, char *argv[])
             {
               std::cout << "\n"
                         << std::string(70, '=') << "\n"
-                        << "WARNING: Reference solver disabled for MPI "
-                           "execution (>1 process)\n"
-                        << "Running the reference solution on every MPI rank "
-                           "is prohibitively slow.\n"
-                        << "L2 errors will be reported as NaN.\n"
-                        << "To compute L2 errors, run with: mpirun -np 1 "
-                           "./heat-equation <params>\n"
+                        << "NOTE: Reference solver running replicated on all "
+                           "MPI ranks.\n"
+                        << "This allows L2 error computation but may be slow.\n"
                         << std::string(70, '=') << "\n\n";
             }
-          run_reference = false;
+          // run_reference = true; // Implicitly remains true
         }
 
       // Reference solver disabled for MPI
@@ -400,7 +415,9 @@ main(int argc, char *argv[])
           params.output_dir = "solutions/reference/";
           params.use_space_adaptivity = false;
           params.use_time_adaptivity = false;
-          params.use_step_doubling = false;
+          params.time_adaptivity_method = "step_doubling"; // Default
+          params.time_step_controller = "integral";
+          params.use_rannacher_smoothing = false;
           params.generate_mesh = mesh;
           params.cells_per_direction = ref_cells;
           params.source_frequency_N = N_val;
@@ -453,13 +470,25 @@ main(int argc, char *argv[])
         }
 
       auto run_one = [&](const std::string &name, bool use_space, bool use_time,
-                         bool use_sd) {
+                         const std::string &adapt_method) {
         HeatEquationParameters params;
         params.run_name = name;
         params.output_dir = "solutions/" + name + "/";
         params.use_space_adaptivity = use_space;
         params.use_time_adaptivity = use_time;
-        params.use_step_doubling = use_sd;
+
+        // Pass the configured choice for method, unless overridden by run_mode
+        // logic For full comparison (run_mode=0), we might need to be specific,
+        // but for now we use the parameter file settings for the "Adaptive
+        // Time" part, or hardcode based on the old logic if we want to preserve
+        // exact comparison behavior. The prompt asked to keep old behavior
+        // available. Let's assume 'adapt_method' argument controls the method
+        // name if provided.
+
+        params.time_adaptivity_method = adapt_method;
+        params.time_step_controller = controller;
+        params.use_rannacher_smoothing = smoothing;
+
         params.generate_mesh = mesh;
         params.cells_per_direction = cells_per_direction;
         params.source_frequency_N = N_val;
@@ -503,11 +532,10 @@ main(int argc, char *argv[])
 
       if(run_mode == 0)
         {
-          run_one("fixed_space_fixed_time", false, false, false);
-          run_one("adaptive_space_fixed_time", true, false, false);
-          run_one("fixed_space_adaptive_time", false, true, time_step_doubling);
-          run_one("adaptive_space_adaptive_time", true, true,
-                  time_step_doubling);
+          run_one("fixed_space_fixed_time", false, false, "step_doubling");
+          run_one("adaptive_space_fixed_time", true, false, "step_doubling");
+          run_one("fixed_space_adaptive_time", false, true, method);
+          run_one("adaptive_space_adaptive_time", true, true, method);
           if(Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
             {
               std::cout << "\nComparison finished. CSV saved to: "
@@ -515,13 +543,13 @@ main(int argc, char *argv[])
             }
         }
       else if(run_mode == 1)
-        run_one("fixed_space_fixed_time", false, false, false);
+        run_one("fixed_space_fixed_time", false, false, "step_doubling");
       else if(run_mode == 2)
-        run_one("adaptive_space_fixed_time", true, false, false);
+        run_one("adaptive_space_fixed_time", true, false, "step_doubling");
       else if(run_mode == 3)
-        run_one("fixed_space_adaptive_time", false, true, time_step_doubling);
+        run_one("fixed_space_adaptive_time", false, true, method);
       else if(run_mode == 4)
-        run_one("adaptive_space_adaptive_time", true, true, time_step_doubling);
+        run_one("adaptive_space_adaptive_time", true, true, method);
 
       return 0;
     }

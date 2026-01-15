@@ -117,7 +117,9 @@ HeatEquation<dim>::HeatEquation(const HeatEquationParameters &params,
     fe(1), dof_handler(triangulation), time_step(params.initial_time_step),
     use_space_adaptivity(params.use_space_adaptivity),
     use_time_adaptivity(params.use_time_adaptivity),
-    use_step_doubling(params.use_step_doubling),
+    time_adaptivity_method(params.time_adaptivity_method),
+    time_step_controller(params.time_step_controller),
+    use_rannacher_smoothing(params.use_rannacher_smoothing),
     time_step_tolerance(params.time_step_tolerance),
     time_step_min(params.time_step_min), theta(params.theta),
     density(params.density), specific_heat(params.specific_heat),
@@ -429,6 +431,68 @@ HeatEquation<dim>::log_time_event(const double t_now, const double dt_now,
 }
 
 template <int dim>
+double
+HeatEquation<dim>::compute_new_step_integral(const double       error,
+                                             const double       sol_norm,
+                                             const double       current_dt,
+                                             const unsigned int p)
+{
+  double err_ratio =
+    (error > 0.0) ? (time_step_tolerance * sol_norm / error) : 1e6;
+  double dt_new =
+    current_dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
+  return dt_new;
+}
+
+template <int dim>
+double
+HeatEquation<dim>::compute_new_step_pi(const double       error,
+                                       const double       sol_norm,
+                                       const double       current_dt,
+                                       const unsigned int p)
+{
+  // Gustafsson et al. PI Control
+  const double order = p;
+  const double k_I = 0.3 / (order + 1.0); // Integral gain
+  const double k_P = 0.4 / (order + 1.0); // Proportional gain
+
+  double factor = 1.0;
+  double scaled_err =
+    (error > 0.0) ? (error / (time_step_tolerance * sol_norm)) : 1e-6;
+
+  // Safety check for zero error
+  if(scaled_err < 1e-10)
+    scaled_err = 1e-10;
+
+  if(previous_error == -1.0)
+    {
+      // First step or after rejection: Integral controller only
+      factor =
+        time_step_safety * std::pow(1.0 / scaled_err, 1.0 / (order + 1.0));
+    }
+  else
+    {
+      // PI Controller
+      double scaled_prev_err =
+        (previous_error > 0.0)
+          ? (previous_error / (time_step_tolerance * sol_norm))
+          : 1e-6;
+      // Prevent division by zero or extreme values
+      if(scaled_prev_err < 1e-10)
+        scaled_prev_err = 1e-10;
+
+      const double ratio_now = 1.0 / scaled_err;
+      const double ratio_prev =
+        scaled_prev_err; // (1/e_n) / (1/e_{n-1}) = e_{n-1}/e_n
+
+      factor = time_step_safety * std::pow(ratio_now, k_I) *
+               std::pow(ratio_now * ratio_prev, k_P);
+    }
+
+  return current_dt * factor;
+}
+
+template <int dim>
 void
 HeatEquation<dim>::refine_mesh(const unsigned int min_grid_level,
                                const unsigned int max_grid_level)
@@ -619,12 +683,25 @@ HeatEquation<dim>::solve_timestep_doubling()
                                   triangulation.n_global_active_cells());
 
       // Adjust time step for next iteration
-      double err_ratio =
-        (error > 0.0) ? (time_step_tolerance * sol_norm / error) : 1e6;
-      double dt_new =
-        dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
+      double dt_new;
+
+      if(time_step_controller == "pi")
+        {
+          dt_new = compute_new_step_pi(error, sol_norm, dt, p);
+        }
+      else
+        {
+          dt_new = compute_new_step_integral(error, sol_norm, dt, p);
+        }
+
       dt_new = std::min(std::max(dt_new, time_step_min), time_step_max);
+
+      // Limit growth/shrink to prevent wild oscillations
+      // dt_new = std::min(dt_new, 2.0 * dt); // Optional stability clamp
+
       time_step = dt_new;
+      previous_error = error; // Store for next step
+
       log_time_event(time, dt, 1, error, time_step);
 
       return true;
@@ -632,12 +709,15 @@ HeatEquation<dim>::solve_timestep_doubling()
   else
     {
       // Reject step and reduce time step
-      double err_ratio =
-        (error > 0.0) ? (time_step_tolerance * sol_norm / error) : 1e6;
-      double dt_new =
-        dt * time_step_safety * std::pow(err_ratio, 1.0 / (p + 1.0));
+      // For rejection, always use Integral controller (safer)
+      double dt_new = compute_new_step_integral(error, sol_norm, dt, p);
+
       dt_new = std::max(dt_new, time_step_min);
       time_step = dt_new;
+
+      // Reset PI controller history on rejection
+      previous_error = -1.0;
+
       pcout << "[" << run_name << "] Rejected at t=" << time << " dt=" << dt
             << " err=" << error << " new_dt=" << time_step << "\n";
       stats.register_time_step_attempt(dt, false);
@@ -720,6 +800,8 @@ template <int dim>
 void
 HeatEquation<dim>::run()
 {
+  const double user_configured_theta = theta; // Backup user setting
+
   stats.reset();
   const auto t_start = std::chrono::steady_clock::now();
 
@@ -794,6 +876,14 @@ HeatEquation<dim>::run()
       while(time < end_time - eps)
         {
           const double dt = std::min(time_step, end_time - time);
+          // Rannacher Smoothing (Fixed Step): First few steps use Implicit
+          // Euler if enabled
+          if(use_rannacher_smoothing && timestep_number < 4 &&
+             std::abs(user_configured_theta - 1.0) > 1e-9)
+            theta = 1.0;
+          else
+            theta = user_configured_theta;
+
           const double t_new = time + dt;
 
           ++timestep_number;
@@ -832,9 +922,17 @@ HeatEquation<dim>::run()
       // Adaptive time stepping mode
       while(time < end_time - eps)
         {
-          if(use_step_doubling)
+          if(time_adaptivity_method == "step_doubling")
             {
               // Step doubling adaptivity
+
+              // Rannacher Smoothing (Adaptive) if enabled
+              if(use_rannacher_smoothing && timestep_number < 4 &&
+                 std::abs(user_configured_theta - 1.0) > 1e-9)
+                theta = 1.0;
+              else
+                theta = user_configured_theta;
+
               bool accepted = solve_timestep_doubling();
 
               if(accepted)
