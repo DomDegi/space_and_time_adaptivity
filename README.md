@@ -129,15 +129,6 @@ $$
 ⚠️ **Important:** All material parameters (ρ, c_p, k) must be **strictly positive**.
 > Setting these values to zero or negative numbers will violate the **Symmetric Positive Definite (SPD)** property required by the Conjugate Gradient (CG) solver, causing immediate runtime errors (e.g., `NaN` residuals).
 
-#### 4. Solver Settings
-```prm
-subsection Solver Settings
-  set theta = 0.5                         # Time integration: 0=Explicit, 0.5=Crank-Nicolson, 1=Implicit
-  set time_step_tolerance = 1e-6          # Error threshold for adaptivity
-  set minimum_time_step = 1e-4            # Minimum allowed time step
-  set use_step_doubling = true            # Use step-doubling (true) or heuristic (false)
-end
-```
 
 #### 4. Solver Settings
 ```prm
@@ -175,6 +166,7 @@ Once the error $e$ is estimated, the next time step $h_{new}$ is calculated:
 #### Rannacher Smoothing
 When using the Crank-Nicolson scheme ($\theta=0.5$), rough initial data can cause spurious oscillations.
 **Rannacher Smoothing** replaces Crank-Nicolson with Implicit Euler ($\theta=1.0$) for the first few time steps (typically 2-4). Implicit Euler is L-stable and effectively damps out high-frequency stiff modes, restoring accuracy for the subsequent Crank-Nicolson steps.
+#### 6. Simulation Control
 ```prm
 subsection Simulation Control
   set run_mode = 0                        # 0=Full comparison, 1-4=specific configurations
