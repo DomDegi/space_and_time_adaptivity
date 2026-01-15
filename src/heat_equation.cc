@@ -203,9 +203,13 @@ template <int dim>
 void
 HeatEquation<dim>::solve_time_step()
 {
+  // Solver control with relative tolerance on RHS L2 norm
   SolverControl solver_control(solution.size(), 1e-12 * system_rhs.l2_norm());
   SolverCG<TrilinosWrappers::MPI::Vector> cg(solver_control);
 
+  // Algebraic Multigrid (AMG) Preconditioner (Trilinos ML/MueLu)
+  // Configured for Elliptic problems (Heat eq. LHS is Mass + dt*Laplace, which
+  // is elliptic)
   TrilinosWrappers::PreconditionAMG                 preconditioner;
   TrilinosWrappers::PreconditionAMG::AdditionalData data;
   data.elliptic = true;
@@ -238,9 +242,11 @@ HeatEquation<dim>::do_time_step(const TrilinosWrappers::MPI::Vector &u_old,
   // Matrix contributions (these are safe as matrices are already condensed)
   TrilinosWrappers::MPI::Vector tmp(locally_owned_dofs, mpi_communicator);
 
+  // M * u_old
   mass_matrix.vmult(tmp, u_old);
   system_rhs.add(1.0, tmp);
 
+  // - (1-theta) * dt * A * u_old
   laplace_matrix.vmult(tmp, u_old);
   system_rhs.add(-(1.0 - theta) * dt, tmp);
 
@@ -311,6 +317,7 @@ HeatEquation<dim>::do_time_step(const TrilinosWrappers::MPI::Vector &u_old,
   system_rhs.compress(VectorOperation::add);
 
   // Prepare LHS Matrix
+  // LHS = M + theta * dt * A
   system_matrix.copy_from(mass_matrix);
   system_matrix.add(theta * dt, laplace_matrix);
 
