@@ -41,7 +41,11 @@ struct HeatEquationParameters
   std::string output_dir;
   bool        use_space_adaptivity;
   bool        use_time_adaptivity;
-  bool        use_step_doubling;
+
+  // Time stepping method configuration
+  std::string time_adaptivity_method;  // "step_doubling" or "heuristic"
+  std::string time_step_controller;    // "integral" or "pi"
+  bool        use_rannacher_smoothing; // Enable implicit Euler startup
 
   // Mesh configuration
   bool generate_mesh;
@@ -132,9 +136,27 @@ public:
   };
 
   /**
+   * @brief Helper to compute new time step using Integral controller.
+   */
+  double
+  compute_new_step_integral(const double       error,
+                            const double       sol_norm,
+                            const double       current_dt,
+                            const unsigned int p);
+
+  /**
+   * @brief Helper to compute new time step using PI controller (Gustafsson).
+   */
+  double
+  compute_new_step_pi(const double       error,
+                      const double       sol_norm,
+                      const double       current_dt,
+                      const unsigned int p);
+
+  /**
    * @brief Constructor initializing all simulation parameters.
    */
-  HeatEquation(const HeatEquationParameters &params);
+  HeatEquation(const HeatEquationParameters& params);
 
   /**
    * @brief Main driver function.
@@ -142,24 +164,24 @@ public:
   void
   run();
 
-  const DoFHandler<dim> &
+  const DoFHandler<dim>&
   get_dof_handler() const
   {
     return dof_handler;
   }
-  const Vector<double> &
+  const Vector<double>&
   get_solution() const
   {
     return solution;
   }
-  const RunStats &
+  const RunStats&
   get_stats() const
   {
     return stats;
   }
 
   double
-  compute_L2_error_against(const Function<dim> &reference_function) const;
+  compute_L2_error_against(const Function<dim>& reference_function) const;
 
 private:
   void
@@ -168,10 +190,10 @@ private:
   solve_time_step();
 
   void
-  do_time_step(const Vector<double> &u_old,
+  do_time_step(const Vector<double>& u_old,
                const double          dt,
                const double          t_new,
-               Vector<double>       &u_out);
+               Vector<double>&       u_out);
 
   void
   output_results();
@@ -250,13 +272,18 @@ private:
   // --- Configuration Flags ---
   bool use_space_adaptivity;
   bool use_time_adaptivity;
-  bool use_step_doubling;
 
-  double       time_step_tolerance;
-  double       time_step_min;
-  double       time_step_max    = 1e-1;
-  double       time_step_safety = 0.9;
-  const double theta;
+  std::string time_adaptivity_method;
+  std::string time_step_controller;
+  bool        use_rannacher_smoothing;
+
+  double previous_error = -1.0; // For PI controller history
+
+  double time_step_tolerance;
+  double time_step_min;
+  double time_step_max    = 1e-1;
+  double time_step_safety = 0.9;
+  double theta;
 
   // --- Physical Parameters ---
   double density;              ///< rho [kg/m^3]
@@ -288,8 +315,9 @@ private:
   std::string run_name;
   std::string output_dir;
 
-  RunStats                                 stats;
-  PreconditionJacobi<SparseMatrix<double>> preconditioner;
+  RunStats stats;
+  // AMG unavailable, using SSOR
+  PreconditionSSOR<SparseMatrix<double>> preconditioner;
 
   /// Vector of (time, filename) pairs for PVD master file generation
   std::vector<std::pair<double, std::string>> times_and_names;

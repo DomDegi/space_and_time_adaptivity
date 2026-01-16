@@ -20,16 +20,13 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
   add_definitions(-DBUILD_TYPE_DEBUG)
 endif()
 
-# MPI Configuration
-find_package(MPI REQUIRED)
-set(CMAKE_CXX_COMPILER "${MPI_CXX_COMPILER}")
-
 # Boost Configuration
 # HINTS is essential on clusters to find libraries in module paths
 find_package(Boost 1.72.0 REQUIRED
   COMPONENTS filesystem iostreams serialization
   HINTS ${BOOST_DIR} $ENV{BOOST_DIR} $ENV{mkBoostPrefix}
 )
+
 message(STATUS "Boost found at: ${Boost_DIR}")
 include_directories(${Boost_INCLUDE_DIRS})
 
@@ -37,10 +34,14 @@ include_directories(${Boost_INCLUDE_DIRS})
 find_package(deal.II 9.3.1 REQUIRED
   HINTS ${DEAL_II_DIR} $ENV{DEAL_II_DIR} $ENV{mkDealiiPrefix}
 )
+
 deal_ii_initialize_cached_variables()
+include_directories(${DEAL_II_INCLUDE_DIRS})
 
 # Compiler Flags
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wfloat-conversion -Wmissing-braces -Wnon-virtual-dtor")
+
+add_compile_definitions(OMPI_SKIP_MPICXX MPICH_SKIP_MPICXX)
 
 # ==============================================================================
 #  PROJECT TARGETS

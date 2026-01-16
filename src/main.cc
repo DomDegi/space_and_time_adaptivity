@@ -143,11 +143,19 @@ declare_parameters(dealii::ParameterHandler& prm)
                       "1e-4",
                       dealii::Patterns::Double(0.0),
                       "Minimum allowed time step");
-    prm.declare_entry("use_step_doubling",
-                      "true",
-                      dealii::Patterns::Bool(),
-                      "Use step-doubling for time adaptivity (true) or "
-                      "simple heuristic (false)");
+    prm.declare_entry("time_adaptivity_method",
+                      "step_doubling",
+                      dealii::Patterns::Selection("step_doubling|heuristic"),
+                      "Method for adaptive time stepping");
+    prm.declare_entry("time_step_controller",
+                      "pi",
+                      dealii::Patterns::Selection("integral|pi"),
+                      "Controller type for step doubling (integral or pi)");
+    prm.declare_entry(
+        "enable_rannacher_smoothing",
+        "true",
+        dealii::Patterns::Bool(),
+        "Enable Rannacher smoothing (Implicit Euler for first few steps)");
   }
   prm.leave_subsection();
 
@@ -290,10 +298,13 @@ main(int argc, char* argv[])
 
     // --- Read Solver Settings ---
     prm.enter_subsection("Solver Settings");
-    const double user_theta         = prm.get_double("theta");
-    const double user_tol           = prm.get_double("time_step_tolerance");
-    const double user_dt_min        = prm.get_double("minimum_time_step");
-    const bool   time_step_doubling = prm.get_bool("use_step_doubling");
+    const double user_theta  = prm.get_double("theta");
+    const double user_tol    = prm.get_double("time_step_tolerance");
+    const double user_dt_min = prm.get_double("minimum_time_step");
+
+    const std::string method     = prm.get("time_adaptivity_method");
+    const std::string controller = prm.get("time_step_controller");
+    const bool        smoothing  = prm.get_bool("enable_rannacher_smoothing");
     prm.leave_subsection();
 
     // Validate solver settings
@@ -348,8 +359,11 @@ main(int argc, char* argv[])
               << ")\n"
               << "  Time step tolerance: " << user_tol << "\n"
               << "  Minimum time step: " << user_dt_min << "\n"
-              << "  Step-doubling: "
-              << (time_step_doubling ? "Yes" : "Heuristic") << "\n"
+              << "  Minimum time step: " << user_dt_min << "\n"
+              << "  Adaptivity Method: " << method << "\n"
+              << "  Controller: " << controller << "\n"
+              << "  Rannacher Smoothing: "
+              << (smoothing ? "Enabled" : "Disabled") << "\n"
               << "\n[Simulation Control]\n"
               << "  Run mode: " << run_mode << " ("
               << (run_mode == 0   ? "Full Comparison"
@@ -388,7 +402,11 @@ main(int argc, char* argv[])
       params.output_dir                      = "solutions/reference";
       params.use_space_adaptivity            = false;
       params.use_time_adaptivity             = false;
-      params.use_step_doubling               = false;
+      params.use_space_adaptivity            = false;
+      params.use_time_adaptivity             = false;
+      params.time_adaptivity_method          = "step_doubling";
+      params.time_step_controller            = "integral";
+      params.use_rannacher_smoothing         = false;
       params.generate_mesh                   = mesh;
       params.cells_per_direction             = ref_cells;
       params.source_frequency_N              = N_val;
@@ -431,15 +449,21 @@ main(int argc, char* argv[])
 
     const std::string summary_path = "solutions/summary_comparison.csv";
 
-    auto run_one =
-        [&](const std::string& name, bool use_space, bool use_time, bool use_sd)
+    auto run_one = [&](const std::string& name,
+                       bool               use_space,
+                       bool               use_time,
+                       const std::string& adapt_method)
     {
       HeatEquationParameters params;
-      params.run_name                        = name;
-      params.output_dir                      = "solutions/" + name;
-      params.use_space_adaptivity            = use_space;
-      params.use_time_adaptivity             = use_time;
-      params.use_step_doubling               = use_sd;
+      params.run_name             = name;
+      params.output_dir           = "solutions/" + name;
+      params.use_space_adaptivity = use_space;
+      params.use_time_adaptivity  = use_time;
+
+      params.time_adaptivity_method  = adapt_method;
+      params.time_step_controller    = controller;
+      params.use_rannacher_smoothing = smoothing;
+
       params.generate_mesh                   = mesh;
       params.cells_per_direction             = cells_per_direction;
       params.source_frequency_N              = N_val;
@@ -478,21 +502,21 @@ main(int argc, char* argv[])
 
     if (run_mode == 0)
     {
-      run_one("fixed_space_fixed_time", false, false, false);
-      run_one("adaptive_space_fixed_time", true, false, false);
-      run_one("fixed_space_adaptive_time", false, true, time_step_doubling);
-      run_one("adaptive_space_adaptive_time", true, true, time_step_doubling);
+      run_one("fixed_space_fixed_time", false, false, "step_doubling");
+      run_one("adaptive_space_fixed_time", true, false, "step_doubling");
+      run_one("fixed_space_adaptive_time", false, true, method);
+      run_one("adaptive_space_adaptive_time", true, true, method);
       std::cout << "\nComparison finished. CSV saved to: " << summary_path
                 << "\n";
     }
     else if (run_mode == 1)
-      run_one("fixed_space_fixed_time", false, false, false);
+      run_one("fixed_space_fixed_time", false, false, "step_doubling");
     else if (run_mode == 2)
-      run_one("adaptive_space_fixed_time", true, false, false);
+      run_one("adaptive_space_fixed_time", true, false, "step_doubling");
     else if (run_mode == 3)
-      run_one("fixed_space_adaptive_time", false, true, time_step_doubling);
+      run_one("fixed_space_adaptive_time", false, true, method);
     else if (run_mode == 4)
-      run_one("adaptive_space_adaptive_time", true, true, time_step_doubling);
+      run_one("adaptive_space_adaptive_time", true, true, method);
 
     return 0;
   }
