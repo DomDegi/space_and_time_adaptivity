@@ -20,15 +20,6 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
   add_definitions(-DBUILD_TYPE_DEBUG)
 endif()
 
-# Boost Configuration
-# HINTS is essential on clusters to find libraries in module paths
-find_package(Boost 1.72.0 REQUIRED
-  COMPONENTS filesystem iostreams serialization
-  HINTS ${BOOST_DIR} $ENV{BOOST_DIR} $ENV{mkBoostPrefix}
-)
-message(STATUS "Boost found at: ${Boost_DIR}")
-include_directories(${Boost_INCLUDE_DIRS})
-
 # deal.II Configuration
 find_package(deal.II 9.3.1 REQUIRED
   HINTS ${DEAL_II_DIR} $ENV{DEAL_II_DIR} $ENV{mkDealiiPrefix}
