@@ -318,6 +318,19 @@ main(int argc, char *argv[])
       const double output_interval = prm.get_double("output_time_interval");
       prm.leave_subsection();
 
+      if (user_theta < 0.5)
+        throw std::invalid_argument(
+          "Invalid theta value: theta must be >= 0.5 "
+          "(Crank-Nicolson or Implicit Euler required).");
+
+      if (user_tol <= 0.0)
+        throw std::invalid_argument(
+          "Time step tolerance must be strictly positive.");
+
+      if (user_dt_min <= 0.0)
+        throw std::invalid_argument(
+          "Minimum time step (dt_min) must be strictly positive.");
+
       if(Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
         {
           std::cout << "\n============================================\n"
