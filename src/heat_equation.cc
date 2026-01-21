@@ -202,32 +202,6 @@ HeatEquation<dim>::setup_system()
 }
 
 template <int dim>
-double HeatEquation<dim>::compute_dt_stability_limit(const double theta_now) const
-{
-  // No stability restriction needed for theta >= 1/2
-  if (theta_now >= 0.5)
-    return std::numeric_limits<double>::infinity();
-
-  // Compute global h_min (across MPI ranks)
-  double h_min_local = std::numeric_limits<double>::infinity();
-  for (const auto &cell : triangulation.active_cell_iterators())
-    if (cell->is_locally_owned())
-      h_min_local = std::min(h_min_local, cell->diameter());
-
-  const double h_min = Utilities::MPI::min(h_min_local, mpi_communicator);
-
-  // Safety / calibration constant (tune if needed)
-  const double c0 = 0.05;             // conservative default
-  const double denom = (1.0 - 2.0*theta_now);
-
-  // thermal_conductivity scales the stiffness (your laplace_matrix *= thermal_conductivity)
-  // Units-wise: dt ~ h^2 / kappa
-  const double dt_max = (c0 / denom) * (h_min * h_min) / std::max(thermal_conductivity, 1e-30);
-
-  return dt_max;
-}
-
-template <int dim>
 void
 HeatEquation<dim>::solve_time_step()
 {
@@ -726,7 +700,6 @@ HeatEquation<dim>::solve_timestep_doubling()
       // dt_new = std::min(dt_new, 2.0 * dt); // Optional stability clamp
 
       time_step = dt_new;
-      time_step = std::min(time_step, compute_dt_stability_limit(theta));
       previous_error = error; // Store for next step
 
       log_time_event(time, dt, 1, error, time_step);
@@ -902,9 +875,7 @@ HeatEquation<dim>::run()
       // Fixed time step mode
       while(time < end_time - eps)
         {
-          double dt = std::min(time_step, end_time - time);
-          dt = std::min(dt, compute_dt_stability_limit(theta));
-
+          const double dt = std::min(time_step, end_time - time);
           // Rannacher Smoothing (Fixed Step): First few steps use Implicit
           // Euler if enabled
           if(use_rannacher_smoothing && timestep_number < 4 &&
@@ -944,8 +915,6 @@ HeatEquation<dim>::run()
 
           // Adapt mesh if needed
           adapt_mesh();
-          if (theta < 0.5)
-                time_step = std::min(time_step, compute_dt_stability_limit(theta));
         }
     }
   else
@@ -977,8 +946,6 @@ HeatEquation<dim>::run()
 
                   // Adapt mesh if needed
                   adapt_mesh();
-                  if (theta < 0.5)
-                        time_step = std::min(time_step, compute_dt_stability_limit(theta));
                 }
             }
           else
@@ -995,8 +962,6 @@ HeatEquation<dim>::run()
 
               // Adapt mesh if needed
               adapt_mesh();
-              if (theta < 0.5)
-                    time_step = std::min(time_step, compute_dt_stability_limit(theta));
             }
         }
     }
