@@ -133,7 +133,7 @@ $$
 #### 4. Solver Settings
 ```prm
 subsection Solver Settings
-  set theta = 0.5                         # Time integration: 0=Explicit, 0.5=Crank-Nicolson, 1=Implicit
+  set theta = 0.5                         # Time integration: 0=Explicit, 0.5=Crank-Nicolson, 1=Implicit 
   set time_step_tolerance = 1e-6          # Error threshold for adaptivity
   set minimum_time_step = 1e-4            # Minimum allowed time step
   set time_adaptivity_method = step_doubling # "step_doubling" or "heuristic"
@@ -141,6 +141,7 @@ subsection Solver Settings
   set enable_rannacher_smoothing = true   # Use Implicit Euler for first few steps (true/false)
 end
 ```
+⚠️ **Important:** An exception gets thrown if theta < 0.5
 
 ### 5. Time Adaptivity Methods
 
