@@ -214,6 +214,8 @@ private:
    */
   void setup_system();
 
+  double compute_dt_stability_limit(const double theta_now) const;
+
   /**
    * @brief Solves the linear system for the current time step.
    *
