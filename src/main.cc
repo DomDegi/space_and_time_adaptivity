@@ -69,17 +69,16 @@ declare_parameters(dealii::ParameterHandler &prm)
     prm.declare_entry(
       "generate_mesh", "true", dealii::Patterns::Bool(),
       "Generate mesh internally (true) or load from file (false)");
-    prm.declare_entry("cells_per_direction", "5", dealii::Patterns::Integer(1),
+    prm.declare_entry("cells_per_direction", "5", dealii::Patterns::Integer(),
                       "Number of cells per direction for generated mesh");
   }
   prm.leave_subsection();
 
   prm.enter_subsection("Physical Parameters");
   {
-    prm.declare_entry("final_time", "0.5", dealii::Patterns::Double(0.0),
+    prm.declare_entry("final_time", "0.5", dealii::Patterns::Double(),
                       "Final simulation time T");
-    prm.declare_entry("source_width_sigma", "0.5",
-                      dealii::Patterns::Double(0.0),
+    prm.declare_entry("source_width_sigma", "0.5", dealii::Patterns::Double(),
                       "Source width parameter sigma (must be positive)");
     prm.declare_entry("source_center_x", "0.5", dealii::Patterns::Double(),
                       "Source center x-coordinate");
@@ -95,12 +94,11 @@ declare_parameters(dealii::ParameterHandler &prm)
 
   prm.enter_subsection("Material Properties");
   {
-    prm.declare_entry("density", "1.0", dealii::Patterns::Double(0.0),
+    prm.declare_entry("density", "1.0", dealii::Patterns::Double(),
                       "Density rho [kg/m^3] (must be positive)");
-    prm.declare_entry("specific_heat", "1.0", dealii::Patterns::Double(0.0),
+    prm.declare_entry("specific_heat", "1.0", dealii::Patterns::Double(),
                       "Specific heat c_p [J/(kg K)] (must be positive)");
-    prm.declare_entry("thermal_conductivity", "1.0",
-                      dealii::Patterns::Double(0.0),
+    prm.declare_entry("thermal_conductivity", "1.0", dealii::Patterns::Double(),
                       "Thermal conductivity k [W/(m K)] (must be positive)");
     prm.declare_entry("source_intensity", "1.0", dealii::Patterns::Double(),
                       "Source intensity Q [W/m^3]");
@@ -110,13 +108,11 @@ declare_parameters(dealii::ParameterHandler &prm)
   prm.enter_subsection("Solver Settings");
   {
     prm.declare_entry(
-      "theta", "0.5", dealii::Patterns::Double(0.0, 1.0),
+      "theta", "0.5", dealii::Patterns::Double(),
       "Theta scheme parameter (0=Explicit, 0.5=Crank-Nicolson, 1=Implicit)");
-    prm.declare_entry("time_step_tolerance", "1e-6",
-                      dealii::Patterns::Double(0.0),
+    prm.declare_entry("time_step_tolerance", "1e-6", dealii::Patterns::Double(),
                       "Time step adaptivity tolerance");
-    prm.declare_entry("minimum_time_step", "1e-4",
-                      dealii::Patterns::Double(0.0),
+    prm.declare_entry("minimum_time_step", "1e-4", dealii::Patterns::Double(),
                       "Minimum allowed time step");
     prm.declare_entry("time_adaptivity_method", "step_doubling",
                       dealii::Patterns::Selection("step_doubling|heuristic"),
@@ -133,19 +129,19 @@ declare_parameters(dealii::ParameterHandler &prm)
   prm.enter_subsection("Simulation Control");
   {
     prm.declare_entry(
-      "run_mode", "0", dealii::Patterns::Integer(0, 4),
+      "run_mode", "0", dealii::Patterns::Integer(),
       "Simulation mode: 0=Full comparison, 1=Fixed/Fixed, 2=Adaptive/Fixed, "
       "3=Fixed/Adaptive, 4=Adaptive/Adaptive");
     prm.declare_entry(
       "run_reference", "true", dealii::Patterns::Bool(),
       "Run high-resolution reference solver for L2 error computation");
-    prm.declare_entry("initial_time_step", "0.01",
-                      dealii::Patterns::Double(0.0), "Initial time step size");
-    prm.declare_entry("base_refinement", "2", dealii::Patterns::Integer(0),
+    prm.declare_entry("initial_time_step", "0.01", dealii::Patterns::Double(),
+                      "Initial time step size");
+    prm.declare_entry("base_refinement", "2", dealii::Patterns::Integer(),
                       "Base global refinement level");
-    prm.declare_entry("pre_refinement_steps", "4", dealii::Patterns::Integer(0),
+    prm.declare_entry("pre_refinement_steps", "4", dealii::Patterns::Integer(),
                       "Number of adaptive pre-refinement steps");
-    prm.declare_entry("refine_every_n_steps", "5", dealii::Patterns::Integer(1),
+    prm.declare_entry("refine_every_n_steps", "5", dealii::Patterns::Integer(),
                       "Refine mesh every N time steps");
     prm.declare_entry("write_vtk", "true", dealii::Patterns::Bool(),
                       "Write VTK output files");
@@ -154,7 +150,7 @@ declare_parameters(dealii::ParameterHandler &prm)
                       "Output at each solver timestep (true for debugging, "
                       "false for fixed time intervals)");
     prm.declare_entry(
-      "output_time_interval", "0.01", dealii::Patterns::Double(0.0),
+      "output_time_interval", "0.01", dealii::Patterns::Double(),
       "Time interval for VTK output when output_at_each_timestep is false");
   }
   prm.leave_subsection();
@@ -244,14 +240,12 @@ main(int argc, char *argv[])
       // Validate critical parameters
       if(T_end <= 0.0)
         {
-          std::cerr << "Error: Final time (T) must be strictly positive.\n";
-          return 1;
+          std::cerr << "Warning: Final time (T) should be strictly positive.\n";
         }
       if(sigma <= 0.0)
         {
           std::cerr
-            << "Error: Source width (sigma) must be strictly positive.\n";
-          return 1;
+            << "Warning: Source width (sigma) should be strictly positive.\n";
         }
 
       // --- Read Material Properties ---
@@ -265,20 +259,17 @@ main(int argc, char *argv[])
       // Validate physical coefficients
       if(user_rho <= 0.0)
         {
-          std::cerr << "Error: Density (rho) must be strictly positive.\n";
-          return 1;
+          std::cerr << "Warning: Density (rho) should be strictly positive.\n";
         }
       if(user_cp <= 0.0)
         {
           std::cerr
-            << "Error: Specific Heat (c_p) must be strictly positive.\n";
-          return 1;
+            << "Warning: Specific Heat (c_p) should be strictly positive.\n";
         }
       if(user_k <= 0.0)
         {
-          std::cerr
-            << "Error: Thermal Conductivity (k) must be strictly positive.\n";
-          return 1;
+          std::cerr << "Warning: Thermal Conductivity (k) should be strictly "
+                       "positive.\n";
         }
 
       // --- Read Solver Settings ---
@@ -295,14 +286,12 @@ main(int argc, char *argv[])
       if(user_tol <= 0.0)
         {
           std::cerr
-            << "Error: Time step tolerance must be strictly positive.\n";
-          return 1;
+            << "Warning: Time step tolerance should be strictly positive.\n";
         }
       if(user_dt_min <= 0.0)
         {
-          std::cerr
-            << "Error: Minimum time step (dt_min) must be strictly positive.\n";
-          return 1;
+          std::cerr << "Warning: Minimum time step (dt_min) should be strictly "
+                       "positive.\n";
         }
 
       // --- Read Simulation Control ---
@@ -318,18 +307,14 @@ main(int argc, char *argv[])
       const double output_interval = prm.get_double("output_time_interval");
       prm.leave_subsection();
 
-      if (user_theta < 0.5)
-        throw std::invalid_argument(
-          "Invalid theta value: theta must be >= 0.5 "
-          "(Crank-Nicolson or Implicit Euler required).");
+      if(user_theta < 0.5)
+        std::cerr << "Warning: theta value < 0.5 detected (unstable).\n";
 
-      if (user_tol <= 0.0)
-        throw std::invalid_argument(
-          "Time step tolerance must be strictly positive.");
+      if(user_tol <= 0.0)
+        std::cerr << "Warning: Time step tolerance should be positive.\n";
 
-      if (user_dt_min <= 0.0)
-        throw std::invalid_argument(
-          "Minimum time step (dt_min) must be strictly positive.");
+      if(user_dt_min <= 0.0)
+        std::cerr << "Warning: Minimum time step should be positive.\n";
 
       if(Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
         {
