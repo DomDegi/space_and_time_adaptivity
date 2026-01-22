@@ -114,12 +114,14 @@ declare_parameters(dealii::ParameterHandler &prm)
                       "Time step adaptivity tolerance");
     prm.declare_entry("minimum_time_step", "1e-4", dealii::Patterns::Double(),
                       "Minimum allowed time step");
-    prm.declare_entry("time_adaptivity_method", "step_doubling",
-                      dealii::Patterns::Selection("step_doubling|heuristic"),
-                      "Method for adaptive time stepping");
+    prm.declare_entry(
+      "time_adaptivity_method", "step_doubling",
+      dealii::Patterns::Selection("step_doubling|heuristic"),
+      "Method for adaptive time stepping [Choices: step_doubling, heuristic]");
     prm.declare_entry("time_step_controller", "pi",
                       dealii::Patterns::Selection("integral|pi"),
-                      "Controller type for step doubling (integral or pi)");
+                      "Controller type for step doubling (integral or pi) "
+                      "[Choices: integral, pi]");
     prm.declare_entry(
       "enable_rannacher_smoothing", "true", dealii::Patterns::Bool(),
       "Enable Rannacher smoothing (Implicit Euler for first few steps)");
