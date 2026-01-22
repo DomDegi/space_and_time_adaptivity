@@ -511,7 +511,7 @@ HeatEquation<dim>::refine_mesh(const unsigned int min_grid_level,
 
   // Use parallel distributed refinement
   parallel::distributed::GridRefinement::refine_and_coarsen_fixed_fraction(
-    triangulation, estimated_error_per_cell, 0.3, 0.03);
+    triangulation, estimated_error_per_cell, 0.3, 0.15);
 
   if(triangulation.n_levels() > 0)
     {
